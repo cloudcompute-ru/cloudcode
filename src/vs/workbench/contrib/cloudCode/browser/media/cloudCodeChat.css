@@ -1,0 +1,159 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+.cloudcode-chat {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	min-height: 0;
+	overflow: auto;
+	color: var(--vscode-foreground);
+	font-size: var(--vscode-fontSize-body1);
+}
+
+.cloudcode-chat .cloudcode-chat-empty[hidden],
+.cloudcode-chat .cloudcode-chat-hint[hidden] {
+	display: none;
+}
+
+.cloudcode-chat .cloudcode-chat-conversation {
+	flex: 1;
+	min-height: 0;
+	overflow: auto;
+	padding: var(--vscode-spacing-size160);
+	user-select: text;
+}
+
+.cloudcode-chat .cloudcode-chat-empty {
+	display: flex;
+	flex-direction: column;
+	justify-content: center;
+	min-height: 100%;
+	max-width: 32em;
+	margin: 0 auto;
+}
+
+.cloudcode-chat .cloudcode-chat-empty h2 {
+	margin: 0 0 var(--vscode-spacing-size80);
+	font-size: var(--vscode-fontSize-heading2);
+	font-weight: var(--vscode-fontWeight-semiBold);
+}
+
+.cloudcode-chat .cloudcode-chat-empty p {
+	margin: 0;
+	color: var(--vscode-descriptionForeground);
+	line-height: 1.5;
+}
+
+.cloudcode-chat .cloudcode-chat-messages {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size160);
+}
+
+.cloudcode-chat .cloudcode-chat-message {
+	padding: var(--vscode-spacing-size120);
+	border-radius: var(--vscode-cornerRadius-medium);
+	overflow-wrap: anywhere;
+}
+
+.cloudcode-chat .cloudcode-chat-message.user {
+	background: var(--vscode-editorWidget-background);
+	border: var(--vscode-strokeThickness) solid var(--vscode-contrastBorder, transparent);
+}
+
+.cloudcode-chat .cloudcode-chat-message h3 {
+	margin: 0 0 var(--vscode-spacing-size80);
+	font-size: var(--vscode-fontSize-heading3);
+	font-weight: var(--vscode-fontWeight-semiBold);
+}
+
+.cloudcode-chat .cloudcode-chat-message p {
+	margin: 0;
+	white-space: pre-wrap;
+	line-height: 1.5;
+}
+
+.cloudcode-chat .cloudcode-chat-composer {
+	flex: 0 0 auto;
+	margin: var(--vscode-spacing-size120);
+}
+
+.cloudcode-chat .cloudcode-chat-progress {
+	position: relative;
+	height: var(--vscode-spacing-size20);
+	margin-bottom: var(--vscode-spacing-size80);
+	overflow: hidden;
+}
+
+.cloudcode-chat .cloudcode-chat-prompt-label {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size80);
+	font-size: var(--vscode-fontSize-label1);
+}
+
+.cloudcode-chat .cloudcode-chat-prompt {
+	box-sizing: border-box;
+	width: 100%;
+	min-width: 0;
+	padding: var(--vscode-spacing-size120);
+	resize: none;
+	border: var(--vscode-strokeThickness) solid var(--vscode-input-border, var(--vscode-editorWidget-border));
+	border-radius: var(--vscode-cornerRadius-small);
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	font: inherit;
+	font-size: var(--vscode-fontSize-body1);
+	line-height: 1.5;
+}
+
+.cloudcode-chat .cloudcode-chat-prompt::placeholder {
+	color: var(--vscode-input-placeholderForeground);
+}
+
+.cloudcode-chat .cloudcode-chat-prompt:focus,
+.cloudcode-chat .cloudcode-chat-conversation:focus-visible {
+	outline: var(--vscode-strokeThickness) solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.cloudcode-chat .cloudcode-chat-footer {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	flex-wrap: wrap;
+	gap: var(--vscode-spacing-size80);
+	margin-top: var(--vscode-spacing-size80);
+}
+
+.cloudcode-chat .cloudcode-chat-status,
+.cloudcode-chat .cloudcode-chat-hint {
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-body2);
+	line-height: 1.5;
+}
+
+.cloudcode-chat .cloudcode-chat-hint {
+	margin: var(--vscode-spacing-size80) 0 0;
+}
+
+.cloudcode-chat .cloudcode-chat-actions {
+	display: flex;
+	gap: var(--vscode-spacing-size80);
+	margin-left: auto;
+}
+
+.cloudcode-chat .cloudcode-chat-actions .monaco-button {
+	width: auto;
+	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size120);
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.cloudcode-chat .monaco-progress-container.infinite .progress-bit {
+		animation: none;
+		width: 100%;
+	}
+}
