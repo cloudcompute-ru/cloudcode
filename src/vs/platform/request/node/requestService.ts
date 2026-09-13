@@ -204,7 +204,7 @@ async function nodeRequestAttempt(options: NodeRequestOptions, token: Cancellati
 			? options.getRawRequest(options)
 			: await getNodeRequest(options);
 
-		const opts: https.RequestOptions & { cache?: 'default' | 'no-store' | 'reload' | 'no-cache' | 'force-cache' | 'only-if-cached' } = {
+		const opts: https.RequestOptions & { cache?: 'default' | 'no-store' | 'reload' | 'no-cache' | 'force-cache' | 'only-if-cached'; redirect?: 'error' } = {
 			hostname: endpoint.hostname,
 			port: endpoint.port ? parseInt(endpoint.port) : (endpoint.protocol === 'https:' ? 443 : 80),
 			protocol: endpoint.protocol,
@@ -221,6 +221,12 @@ async function nodeRequestAttempt(options: NodeRequestOptions, token: Cancellati
 
 		if (options.disableCache) {
 			opts.cache = 'no-store';
+		}
+
+		if (options.isChromiumNetwork && options.followRedirects === 0) {
+			// Electron follows redirects before emitting a response. Enforce an
+			// explicit opt-out in Chromium itself, before forwarding credentials.
+			opts.redirect = 'error';
 		}
 
 		const req = rawRequest(opts, (res: http.IncomingMessage) => {

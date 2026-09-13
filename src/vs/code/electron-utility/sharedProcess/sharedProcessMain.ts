@@ -48,6 +48,10 @@ import { LoggerChannelClient } from '../../../platform/log/common/logIpc.js';
 import product from '../../../platform/product/common/product.js';
 import { IProductService } from '../../../platform/product/common/productService.js';
 import { IRequestService } from '../../../platform/request/common/request.js';
+import { CLOUDCODE_CHANNEL } from '../../../platform/cloudCode/common/cloudCode.js';
+import { CloudCodeService } from '../../../platform/cloudCode/node/cloudCodeService.js';
+import { IEncryptionService } from '../../../platform/encryption/common/encryptionService.js';
+import { BaseSecretStorageService, ISecretStorageService } from '../../../platform/secrets/common/secrets.js';
 import { ISharedProcessConfiguration } from '../../../platform/sharedProcess/node/sharedProcess.js';
 import { IStorageService } from '../../../platform/storage/common/storage.js';
 import { resolveCommonProperties } from '../../../platform/telemetry/common/commonProperties.js';
@@ -298,6 +302,10 @@ class SharedProcessMain extends Disposable implements IClientConnectionFilter {
 			storageService.initialize()
 		]);
 
+		// CloudCode credentials use the OS-backed encryption service and application storage.
+		const encryptionService = ProxyChannel.toService<IEncryptionService>(mainProcessService.getChannel('encryption'));
+		services.set(ISecretStorageService, this._register(new BaseSecretStorageService(!!environmentService.useInMemorySecretStorage, storageService, encryptionService, logService)));
+
 		// Request
 		const networkLogger = this._register(loggerService.createLogger(`network-shared`, { name: localize('networkk', "Network"), group: sharedLogGroup }));
 		const requestService = new RequestService(configurationService, environmentService, this._register(new LogService(networkLogger)));
@@ -487,6 +495,10 @@ class SharedProcessMain extends Disposable implements IClientConnectionFilter {
 		this.server.registerChannel('userDataAutoSync', ProxyChannel.fromService(userDataAutoSync, this._store));
 
 		this.server.registerChannel('IUserDataSyncResourceProviderService', ProxyChannel.fromService(accessor.get(IUserDataSyncResourceProviderService), this._store));
+
+		// CloudCode
+		const cloudCodeService = this._register(accessor.get(IInstantiationService).createInstance(CloudCodeService));
+		this.server.registerChannel(CLOUDCODE_CHANNEL, ProxyChannel.fromService(cloudCodeService, this._store));
 
 		// Tunnel
 		const sharedProcessTunnelChannel = ProxyChannel.fromService(accessor.get(ISharedProcessTunnelService), this._store);

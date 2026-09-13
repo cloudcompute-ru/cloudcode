@@ -14,6 +14,42 @@ import { CancellationError } from '../../../../base/common/errors.js';
 suite('Request Service', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
+	test('passes redirect refusal to the Chromium request constructor when redirects are disabled', async () => {
+		const http = await import('http');
+		const server = http.createServer((_request, response) => response.end());
+		const address = await new Promise<import('net').AddressInfo>((resolve, reject) => {
+			server.once('error', reject);
+			server.listen(0, '127.0.0.1', () => resolve(server.address() as import('net').AddressInfo));
+		});
+		const nativeOptions: Array<string | undefined> = [];
+		const rawRequest: IRawRequestFunction = (options, callback) => {
+			// Node supplies the typed transport for the test; Electron consumes this
+			// constructor option before redirects can forward an OAuth POST body.
+			nativeOptions.push((options as import('http').RequestOptions & { redirect?: string }).redirect);
+			return http.request(options, callback);
+		};
+		try {
+			for (const followRedirects of [0, undefined]) {
+				const response = await nodeRequest({
+					url: `http://127.0.0.1:${address.port}`,
+					type: 'POST',
+					data: 'test-body',
+					isChromiumNetwork: true,
+					followRedirects,
+					getRawRequest: () => rawRequest,
+					callSite: 'requestService.test.chromiumRedirectPolicy',
+				}, CancellationToken.None);
+				response.stream.destroy();
+			}
+			assert.deepStrictEqual(nativeOptions, ['error', undefined]);
+		} finally {
+			await new Promise<void>((resolve, reject) => {
+				server.closeAllConnections();
+				server.close(error => error ? reject(error) : resolve());
+			});
+		}
+	});
+
 	// Kerberos module fails to load on local macOS and Linux CI.
 	(isWindows ? test : test.skip)('Kerberos lookup', async () => {
 		try {
