@@ -5,6 +5,8 @@
 
 import { Codicon } from '../../../../base/common/codicons.js';
 import { localize, localize2 } from '../../../../nls.js';
+import { CLOUDCODE_DEFAULT_SERVER, CLOUDCODE_SERVER_SETTING } from '../../../../platform/cloudCode/common/cloudCode.js';
+import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { registerIcon } from '../../../../platform/theme/common/iconRegistry.js';
@@ -15,6 +17,19 @@ import { CloudCodeChatViewPane } from './cloudCodeChatViewPane.js';
 const containerId = 'workbench.view.cloudCodeChat';
 const title = localize2('cloudCode.chat.title', "CloudCode Chat");
 const icon = registerIcon('cloudcode-chat-view-icon', Codicon.commentDiscussion, localize('cloudCode.chat.icon', "View icon of CloudCode Chat."));
+
+Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
+	id: 'cloudcode',
+	title: localize('cloudCode.configuration', "CloudCode"),
+	properties: {
+		[CLOUDCODE_SERVER_SETTING]: {
+			type: 'string',
+			default: CLOUDCODE_DEFAULT_SERVER,
+			scope: ConfigurationScope.APPLICATION,
+			description: localize('cloudCode.serverUrl', "CloudCompute server used for sign-in and chat. Requires HTTPS; HTTP is allowed only for loopback development servers. Changing the server signs you out."),
+		}
+	}
+});
 
 const container = Registry.as<IViewContainersRegistry>(Extensions.ViewContainersRegistry).registerViewContainer({
 	id: containerId,

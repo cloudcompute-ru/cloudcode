@@ -35,6 +35,7 @@ import './browser/web.main.js';
 //#region --- workbench services
 
 import './services/integrity/browser/integrityService.js';
+import './contrib/cloudCode/browser/cloudCodeWebService.js';
 import './services/search/browser/searchService.js';
 import './services/textfile/browser/browserTextFileService.js';
 import './services/keybinding/browser/keyboardLayoutService.js';

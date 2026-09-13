@@ -35,6 +35,7 @@ import './electron-browser/parts/dialogs/dialog.contribution.js';
 //#region --- workbench services
 
 import './services/textfile/electron-browser/nativeTextFileService.js';
+import './contrib/cloudCode/electron-browser/cloudCodeService.js';
 import './services/dialogs/electron-browser/fileDialogService.js';
 import './services/workspaces/electron-browser/workspacesService.js';
 import './services/menubar/electron-browser/menubarService.js';
