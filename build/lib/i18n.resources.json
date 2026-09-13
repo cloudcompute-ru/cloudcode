@@ -39,6 +39,10 @@
 			"project": "vscode-workbench"
 		},
 		{
+			"name": "vs/workbench/contrib/cloudCode",
+			"project": "vscode-workbench"
+		},
+		{
 			"name": "vs/workbench/contrib/codeEditor",
 			"project": "vscode-workbench"
 		},

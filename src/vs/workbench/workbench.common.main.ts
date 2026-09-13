@@ -226,6 +226,9 @@ import './contrib/notebook/browser/notebook.contribution.js';
 // Speech
 import './contrib/speech/browser/speech.contribution.js';
 
+// CloudCode registers first to provide the default secondary sidebar.
+import './contrib/cloudCode/browser/cloudCode.contribution.js';
+
 // Chat
 import './contrib/chat/browser/chat.shared.contribution.js';
 import './contrib/chat/browser/chat.contribution.js';
