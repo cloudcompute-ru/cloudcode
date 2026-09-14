@@ -59,7 +59,7 @@ export class CloudCodeEditWorkspace extends Disposable implements ICloudCodeEdit
 	) {
 		super();
 		this._register(this.textModelService.registerTextModelContentProvider(PREVIEW_SCHEME, {
-			provideTextContent: resource => this.previewModels.get(resource.toString()) ?? null,
+			provideTextContent: async resource => this.previewModels.get(resource.toString()) ?? null,
 		}));
 	}
 

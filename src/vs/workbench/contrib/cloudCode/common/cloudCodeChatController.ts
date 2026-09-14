@@ -3,12 +3,15 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { Disposable } from '../../../../base/common/lifecycle.js';
+import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
+import { CancellationError, isCancellationError } from '../../../../base/common/errors.js';
+import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { localize } from '../../../../nls.js';
 import { CLOUDCODE_MAX_CONTEXT_BYTES, CLOUDCODE_MAX_MESSAGE_LENGTH, CLOUDCODE_MAX_MESSAGES, ICloudCodeMessage, ICloudCodeModel, ICloudCodeService, ICloudCodeState } from '../../../../platform/cloudCode/common/cloudCode.js';
 import { formatCloudCodePrompt, ICloudCodeAttachment, ICloudCodeContextProvider, mergeCloudCodeAttachments } from './cloudCodeChatContext.js';
 import { ICloudCodeChatMessage, ICloudCodeChatView } from './cloudCodeChat.js';
+import { ICloudCodeAgent } from './cloudCodeAgent.js';
 import { CloudCodeChatMode, formatCloudCodeEditPrompt, ICloudCodeEditProposal, ICloudCodeEditProvider, ICloudCodeEditTarget, parseCloudCodeEdits } from './cloudCodeEdits.js';
 
 /** Owns one window's conversation and coordinates the shared native transport. */
@@ -31,6 +34,8 @@ export class CloudCodeChatController extends Disposable {
 	private editBusy = false;
 	private editRevision = 0;
 	private activeRequest: { id: string; prompt: string; text: string; hasAttachments: boolean; targets?: readonly ICloudCodeEditTarget[] } | undefined;
+	private activeAgent: { source: CancellationTokenSource; completion: Promise<void>; conversation: number; activity: string[] } | undefined;
+	private agentConversation = 0;
 	private disposed = false;
 	private cancellationOnDispose: Promise<void> = Promise.resolve();
 
@@ -38,6 +43,7 @@ export class CloudCodeChatController extends Disposable {
 		private readonly view: ICloudCodeChatView,
 		private readonly contextProvider: ICloudCodeContextProvider | undefined,
 		private readonly editProvider: ICloudCodeEditProvider | undefined,
+		private readonly agent: ICloudCodeAgent | undefined,
 		@ICloudCodeService private readonly service: ICloudCodeService,
 	) {
 		super();
@@ -55,14 +61,14 @@ export class CloudCodeChatController extends Disposable {
 		}));
 		this._register(view.onDidRequestAttachments(() => void this.attachContext()));
 		this._register(view.onDidRemoveAttachment(id => {
-			if (this.editBusy) {
+			if (this.editBusy || this.running) {
 				return;
 			}
 			this.attachments = this.attachments.filter(attachment => attachment.id !== id);
 			this.view.setAttachments(this.attachments, this.loadingAttachments);
 		}));
 		this._register(view.onDidChangeMode(mode => {
-			if (!this.activeRequest && !this.editBusy && !this.loadingAttachments && !this.hasPendingEdits()) {
+			if (!this.running && !this.editBusy && !this.loadingAttachments && !this.hasPendingEdits()) {
 				this.mode = mode;
 			}
 			this.view.setEditMode(this.mode);
@@ -78,7 +84,7 @@ export class CloudCodeChatController extends Disposable {
 		this._register(view.onDidNewConversation(() => this.newConversation()));
 		this._register(view.onDidRetryModels(() => void this.loadModels()));
 		this._register(view.onDidSelectModel(model => {
-			if (!this.activeRequest && !this.editBusy && this.models.some(candidate => candidate.id === model)) {
+			if (!this.running && !this.editBusy && this.models.some(candidate => candidate.id === model)) {
 				this.selectedModel = model;
 				this.updateStatus();
 			}
@@ -152,7 +158,7 @@ export class CloudCodeChatController extends Disposable {
 	}
 
 	private async loadModels(): Promise<void> {
-		if (this.disposed || this.state.status !== 'signedIn' || this.loadingModels || this.editBusy || this.activeRequest) {
+		if (this.disposed || this.state.status !== 'signedIn' || this.loadingModels || this.editBusy || this.running) {
 			return;
 		}
 		const request = ++this.modelRequest;
@@ -186,7 +192,7 @@ export class CloudCodeChatController extends Disposable {
 	}
 
 	private async attachContext(): Promise<void> {
-		if (!this.contextProvider || this.disposed || this.loadingAttachments || this.editBusy || this.activeRequest || this.state.status !== 'signedIn') {
+		if (!this.contextProvider || this.disposed || this.loadingAttachments || this.editBusy || this.running || this.state.status !== 'signedIn') {
 			return;
 		}
 		const revision = ++this.attachmentRevision;
@@ -214,7 +220,11 @@ export class CloudCodeChatController extends Disposable {
 
 	private async submit(prompt: string): Promise<void> {
 		prompt = prompt.trim();
-		if (this.disposed || this.state.status !== 'signedIn' || !this.selectedModel || this.loadingModels || this.loadingAttachments || this.editBusy || this.hasPendingEdits() || this.activeRequest || !prompt) {
+		if (this.disposed || this.state.status !== 'signedIn' || !this.selectedModel || this.loadingModels || this.loadingAttachments || this.editBusy || this.hasPendingEdits() || this.running || !prompt) {
+			return;
+		}
+		if (this.mode === 'agent') {
+			this.submitAgent(prompt, this.selectedModel);
 			return;
 		}
 		try {
@@ -308,6 +318,84 @@ export class CloudCodeChatController extends Disposable {
 		}
 	}
 
+	private submitAgent(prompt: string, model: string): void {
+		const agent = this.agent;
+		if (!agent || prompt.length > CLOUDCODE_MAX_MESSAGE_LENGTH) {
+			this.view.setDraft(prompt);
+			this.view.setError(!agent
+				? localize('cloudcode.agentUnavailable', "Agent mode is not available in this window.")
+				: localize('cloudcode.messageTooLong', "This message is too long. Shorten it before sending."));
+			return;
+		}
+		this.clearEditProposals();
+		const disposables = new DisposableStore();
+		const request = { source: disposables.add(new CancellationTokenSource()), completion: Promise.resolve(), conversation: this.agentConversation, activity: [] as string[] };
+		this.activeAgent = request;
+		const attachments = this.attachments;
+		const responseIndex = this.messages.length + 1;
+		this.messages.push({ role: 'user', text: prompt, attachments }, { role: 'assistant', text: localize('cloudcode.agentStarting', "Exploring your project…") });
+		this.attachments = [];
+		this.history = [];
+		this.historyHasAttachments = false;
+		this.view.setAttachments([], false);
+		this.view.setDraft('');
+		this.view.setError(undefined);
+		this.view.setMessages(this.messages);
+		this.updateStatus();
+		const isCurrent = () => !this.disposed && this.activeAgent === request && request.conversation === this.agentConversation;
+		request.completion = (async () => {
+			try {
+				const result = await agent.run(prompt, attachments, model, request.source.token, message => {
+					if (!isCurrent() || request.source.token.isCancellationRequested) {
+						return;
+					}
+					request.activity.push(message);
+					this.messages[responseIndex] = { role: 'assistant', text: message, activity: [...request.activity] };
+					this.view.setMessages(this.messages);
+				});
+				if (!isCurrent()) {
+					return;
+				}
+				if (request.source.token.isCancellationRequested) {
+					throw new CancellationError();
+				}
+				this.editProposals = result.edits.map(edit => ({ ...edit, id: generateUuid(), status: 'pending', reviewed: false }));
+				this.messages[responseIndex] = { role: 'assistant', text: result.text, attachments: result.attachments, activity: [...request.activity] };
+				if (!result.edits.length) {
+					this.history = [{ role: 'user', content: formatCloudCodePrompt(prompt, result.attachments) }, { role: 'assistant', content: result.text }];
+					this.historyHasAttachments = result.attachments.length > 0;
+				}
+				this.view.setEditProposals(this.editProposals, false);
+				this.view.setMessages(this.messages);
+			} catch (error) {
+				if (isCurrent()) {
+					const stopped = request.source.token.isCancellationRequested || isCancellationError(error);
+					this.messages[responseIndex] = {
+						role: 'assistant',
+						text: stopped ? localize('cloudcode.agentStopped', "Agent stopped. No changes were applied.") : localize('cloudcode.agentFailed', "Agent could not complete this task. No changes were applied."),
+						incomplete: true,
+						activity: [...request.activity]
+					};
+					this.view.setMessages(this.messages);
+					if (!stopped) {
+						this.showError(error);
+					}
+				}
+			} finally {
+				disposables.dispose();
+				if (this.activeAgent === request) {
+					this.activeAgent = undefined;
+					if (!this.disposed) {
+						this.updateStatus();
+						if (this.state.status === 'signedIn' && !this.selectedModel) {
+							void this.loadModels();
+						}
+					}
+				}
+			}
+		})();
+	}
+
 	private finishResponse(incomplete: boolean): void {
 		const request = this.activeRequest;
 		if (!request) {
@@ -355,7 +443,7 @@ export class CloudCodeChatController extends Disposable {
 	}
 
 	private async reviewEdit(id: string, action: 'preview' | 'accept' | 'reject'): Promise<void> {
-		if (this.disposed || !this.editProvider || this.editBusy || this.activeRequest || this.state.status !== 'signedIn') {
+		if (this.disposed || !this.editProvider || this.editBusy || this.running || this.state.status !== 'signedIn') {
 			return;
 		}
 		const proposal = this.editProposals.find(candidate => candidate.id === id);
@@ -410,6 +498,10 @@ export class CloudCodeChatController extends Disposable {
 	}
 
 	private stop(): void {
+		if (this.activeAgent) {
+			this.activeAgent.source.cancel();
+			this.editProvider?.clear();
+		}
 		const request = this.activeRequest;
 		if (request) {
 			// Ignore subsequent deltas immediately, even while native cancellation is in flight.
@@ -419,6 +511,7 @@ export class CloudCodeChatController extends Disposable {
 	}
 
 	private newConversation(): void {
+		this.agentConversation++;
 		this.stop();
 		this.clearEditProposals();
 		this.attachmentRevision++;
@@ -435,7 +528,11 @@ export class CloudCodeChatController extends Disposable {
 	}
 
 	private updateStatus(): void {
-		this.view.setStatus(this.activeRequest ? 'running' : this.loadingModels || this.editBusy ? 'loading' : this.state.status === 'signedIn' && this.selectedModel ? 'ready' : 'disconnected');
+		this.view.setStatus(this.running ? 'running' : this.loadingModels || this.editBusy ? 'loading' : this.state.status === 'signedIn' && this.selectedModel ? 'ready' : 'disconnected');
+	}
+
+	private get running(): boolean {
+		return !!this.activeRequest || !!this.activeAgent;
 	}
 
 	private showError(error: unknown): void {
@@ -455,6 +552,9 @@ export class CloudCodeChatController extends Disposable {
 			return;
 		}
 		this.disposed = true;
+		this.agentConversation++;
+		this.activeAgent?.source.cancel();
+		this.cancellationOnDispose = this.activeAgent?.completion ?? Promise.resolve();
 		this.editRevision++;
 		this.editProvider?.clear();
 		this.modelRequest++;
@@ -462,7 +562,7 @@ export class CloudCodeChatController extends Disposable {
 		const request = this.activeRequest;
 		this.activeRequest = undefined;
 		if (request) {
-			this.cancellationOnDispose = this.service.cancelChat(request.id).catch(() => { /* The window is closing. */ });
+			this.cancellationOnDispose = Promise.all([this.cancellationOnDispose, this.service.cancelChat(request.id).catch(() => { /* The window is closing. */ })]).then(() => undefined);
 		}
 		super.dispose();
 	}

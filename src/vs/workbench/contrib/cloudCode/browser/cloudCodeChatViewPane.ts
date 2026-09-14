@@ -21,6 +21,9 @@ import { ILifecycleService } from '../../../services/lifecycle/common/lifecycle.
 import { CloudCodeChatWidget } from './cloudCodeChatWidget.js';
 import { CloudCodeContext } from './cloudCodeContext.js';
 import { CloudCodeEditWorkspace } from './cloudCodeEditWorkspace.js';
+import { CloudCodeAgentWorkspace } from './cloudCodeAgentWorkspace.js';
+import { CloudCodeAgent } from '../common/cloudCodeAgent.js';
+import { CloudCodeChatMode } from '../common/cloudCodeEdits.js';
 import { CloudCodeAttachmentKind } from '../common/cloudCodeChatContext.js';
 import { CloudCodeChatController } from '../common/cloudCodeChatController.js';
 
@@ -33,6 +36,7 @@ export class CloudCodeChatViewPane extends ViewPane {
 	private controller: CloudCodeChatController | undefined;
 	private readonly context: CloudCodeContext;
 	private readonly editWorkspace: CloudCodeEditWorkspace;
+	private readonly agent: CloudCodeAgent;
 
 	constructor(
 		options: IViewPaneOptions,
@@ -52,6 +56,7 @@ export class CloudCodeChatViewPane extends ViewPane {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 		this.context = instantiationService.createInstance(CloudCodeContext);
 		this.editWorkspace = this._register(instantiationService.createInstance(CloudCodeEditWorkspace));
+		this.agent = new CloudCodeAgent(cloudCodeService, instantiationService.createInstance(CloudCodeAgentWorkspace), this.editWorkspace);
 		this._register(lifecycleService.onWillShutdown(event => {
 			if (this.controller) {
 				event.join(this.controller.shutdown(), { id: 'cloudcode.chat', label: localize('cloudcode.stoppingChat', "Stopping CloudCode chat") });
@@ -70,6 +75,14 @@ export class CloudCodeChatViewPane extends ViewPane {
 				activeItem: items.find(item => item.id === selected),
 			});
 			return picked?.id;
+		}, async mode => {
+			const items: { id: CloudCodeChatMode; label: string; description: string }[] = [
+				{ id: 'ask', label: localize('cloudcode.askMode', "Ask"), description: localize('cloudcode.askModeDetail', "Chat using messages and attachments") },
+				{ id: 'agent', label: localize('cloudcode.agentMode', "Agent"), description: localize('cloudcode.agentModeDetail', "Search the project, read files, and propose changes") },
+				{ id: 'edit', label: localize('cloudcode.proposeEdits', "Propose Edits"), description: localize('cloudcode.editModeDetail', "Change only the files or selections you attach") },
+			];
+			const picked = await this.quickInputService.pick(items, { placeHolder: localize('cloudcode.chatMode', "Choose a chat mode"), activeItem: items.find(item => item.id === mode) });
+			return picked?.id;
 		}));
 		this.controller = this._register(new CloudCodeChatController(this.widget, {
 			assertWorkspaceTrusted: () => this.context.assertWorkspaceTrusted(),
@@ -83,7 +96,7 @@ export class CloudCodeChatViewPane extends ViewPane {
 				const picked = await this.quickInputService.pick(items, { placeHolder: localize('cloudcode.attachContext', "Attach code to your next message") });
 				return picked ? this.context.readAttachments(picked.kind) : [];
 			}
-		}, this.editWorkspace, this.cloudCodeService));
+		}, this.editWorkspace, this.agent, this.cloudCodeService));
 		void this.controller.initialize();
 	}
 

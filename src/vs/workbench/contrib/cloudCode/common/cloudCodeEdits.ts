@@ -10,7 +10,7 @@ const maxResponseBytes = 64 * 1024;
 const maxReplacementBytes = 32 * 1024;
 const maxReplacementsBytes = 48 * 1024;
 
-export type CloudCodeChatMode = 'ask' | 'edit';
+export type CloudCodeChatMode = 'ask' | 'edit' | 'agent';
 
 /** A local target capability; only its ordinal and source snapshot are sent to inference. */
 export interface ICloudCodeEditTarget {
