@@ -1,0 +1,198 @@
+# Copyright (c) Microsoft Corporation. All rights reserved.
+# Licensed under the MIT License. See License.txt in the project root for license information.
+
+name: CloudCode Windows
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/cloudcode-windows.yml'
+      - 'build/**'
+      - 'extensions/**'
+      - 'resources/**'
+      - 'src/**'
+      - 'remote/**'
+      - 'package*.json'
+      - 'product.json'
+      - 'gulpfile.mjs'
+      - '.npmrc'
+      - '.nvmrc'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/cloudcode-windows.yml'
+      - 'build/**'
+      - 'extensions/**'
+      - 'resources/**'
+      - 'src/**'
+      - 'remote/**'
+      - 'package*.json'
+      - 'product.json'
+      - 'gulpfile.mjs'
+      - '.npmrc'
+      - '.nvmrc'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloudcode-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-x64:
+    name: Windows x64 ZIP and User Setup
+    runs-on: windows-2022
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      NODE_OPTIONS: --max-old-space-size=4096
+      VSCODE_QUALITY: oss
+      VSCODE_ARCH: x64
+      npm_config_arch: x64
+      npm_config_foreground_scripts: 'true'
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+
+    steps:
+      - name: Enable Long Git Paths
+        run: git config --global core.longpaths true
+
+      - name: Checkout CloudCode
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          lfs: true
+          persist-credentials: false
+
+      - name: Set Up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+
+      - name: Set Up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Verify Windows Build Tools
+        run: |
+          $components = @(
+            'Microsoft.VisualStudio.Component.VC.Tools.x86.x64',
+            'Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre',
+            'Microsoft.VisualStudio.Component.VC.ATL.Spectre',
+            'Microsoft.VisualStudio.Component.VC.ATLMFC.Spectre',
+            'Microsoft.VisualStudio.Component.Windows11SDK.26100'
+          )
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $installation = & $vswhere -latest -products '*' -version '[17.0,18.0)' -requires $components -property installationPath
+          if ($LASTEXITCODE -ne 0 -or -not $installation) {
+            throw 'Visual Studio 2022 with x64 C++, ATL/MFC Spectre libraries and Windows SDK 26100 is required.'
+          }
+          "vs2022_install=$installation" >> $env:GITHUB_ENV
+          "npm_config_python=$((Get-Command python).Source)" >> $env:GITHUB_ENV
+          $sdkBin = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin\10.0.26100.0\x64'
+          if (-not (Test-Path (Join-Path $sdkBin 'signtool.exe'))) {
+            throw 'Windows SDK signtool.exe is required to package native dependencies.'
+          }
+          $sdkBin >> $env:GITHUB_PATH
+
+      - name: Install Dependencies
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          # Use the upstream OSS CI option: dictation's optional private-feed
+          # native runtime is downloaded on demand and is not part of this app.
+          node build/azure-pipelines/common/disableFoundryLocalInstall.ts
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to configure OSS dependencies.' }
+          npm ci
+          if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed.' }
+
+      - name: Download Built-in Extensions
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node build/lib/builtInExtensions.ts
+
+      - name: Type Check Desktop Sources
+        run: npm run typecheck-client
+
+      - name: Build Windows Application
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          npm run gulp vscode-win32-x64-min
+          if ($LASTEXITCODE -ne 0) { throw 'Windows application build failed.' }
+          npm run gulp vscode-win32-x64-inno-updater
+          if ($LASTEXITCODE -ne 0) { throw 'Windows updater packaging failed.' }
+
+      - name: Check Packaged Application
+        run: |
+          $app = Join-Path (Split-Path $env:GITHUB_WORKSPACE) 'VSCode-win32-x64'
+          $product = Get-Content (Join-Path $app 'resources/app/product.json') -Raw | ConvertFrom-Json
+          $commit = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to read source commit.' }
+          if ($product.nameShort -ne 'CloudCode' -or $product.commit -ne $commit -or $product.disableBuiltinCopilot -ne $true) {
+            throw 'Packaged branding, source commit or Copilot configuration is incorrect.'
+          }
+          if (Test-Path (Join-Path $app 'resources/app/extensions/copilot')) {
+            throw 'The Copilot extension must not be included in CloudCode.'
+          }
+          & (Join-Path $app 'bin/cloudcode.cmd') --version
+          if ($LASTEXITCODE -ne 0) { throw 'The packaged CloudCode CLI failed to start.' }
+
+      - name: Build User Installer
+        run: npm run gulp vscode-win32-x64-user-setup
+
+      - name: Prepare Downloads and Checksums
+        id: downloads
+        run: |
+          $commit = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to read source commit.' }
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $buildName = "CloudCode-$version-$($commit.Substring(0, 8))-win32-x64"
+          $app = Join-Path (Split-Path $env:GITHUB_WORKSPACE) 'VSCode-win32-x64'
+          $downloads = Join-Path $env:GITHUB_WORKSPACE '.build/cloudcode-downloads'
+          New-Item $downloads -ItemType Directory -Force | Out-Null
+          $archive = Join-Path $downloads "$buildName.zip"
+          Push-Location $app
+          try {
+            & 7z a -tzip $archive '.\*' -mx=5
+            if ($LASTEXITCODE -ne 0) { throw 'ZIP creation failed.' }
+          } finally {
+            Pop-Location
+          }
+          Copy-Item '.build/win32-x64/user-setup/VSCodeSetup.exe' (Join-Path $downloads "$buildName-user-setup.exe")
+          Get-ChildItem $downloads -File | Sort-Object Name | ForEach-Object {
+            "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant())  $($_.Name)"
+          } | Set-Content (Join-Path $downloads 'SHA256SUMS.txt') -Encoding utf8
+          "name=$buildName" >> $env:GITHUB_OUTPUT
+          @"
+          Source commit: $commit
+          Version: $version
+          Architecture: Windows x64
+          Unsigned development build. No automatic updates or public release publishing.
+          "@ | Set-Content (Join-Path $downloads 'BUILD.txt') -Encoding utf8
+
+      - name: Upload Windows Downloads
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.downloads.outputs.name }}
+          path: .build/cloudcode-downloads/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Link Downloads
+        env:
+          ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+        run: |
+          @"
+          [Download CloudCode for Windows x64]($env:ARTIFACT_URL)
+
+          Includes the application ZIP, per-user installer, SHA-256 checksums and source commit.
+          These are unsigned development builds, retained for 14 days. Windows may show an unknown publisher warning.
+          "@ >> $env:GITHUB_STEP_SUMMARY
