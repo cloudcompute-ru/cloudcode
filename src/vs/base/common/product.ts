@@ -97,6 +97,9 @@ export interface IDictationRuntimeProductConfig {
 }
 
 export interface IProductConfiguration {
+
+	/** Disable the inherited Copilot experience in this distribution. */
+	readonly disableBuiltinCopilot?: boolean;
 	readonly version: string;
 	readonly date?: string;
 	readonly quality?: string;

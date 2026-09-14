@@ -38,7 +38,7 @@ import { isInternalAccount } from '../../../../platform/assignment/common/assign
 export namespace ChatEntitlementContextKeys {
 
 	export const Setup = {
-		hidden: new RawContextKey<boolean>('chatSetupHidden', false, true), 		// True when chat setup is explicitly hidden.
+		hidden: new RawContextKey<boolean>('chatSetupHidden', product.disableBuiltinCopilot === true, true), 		// True when chat setup is explicitly hidden.
 		installed: new RawContextKey<boolean>('chatSetupInstalled', false, true),  	// True when the chat extension is installed and enabled.
 		disabled: new RawContextKey<boolean>('chatSetupDisabled', false, true),  	// True when the chat extension is disabled due to any other reason than workspace trust.
 		disabledInWorkspace: new RawContextKey<boolean>('chatSetupDisabledInWorkspace', false, true),	// True when chat is disabled at the workspace level via settings.
@@ -390,7 +390,7 @@ export class ChatEntitlementService extends Disposable implements IChatEntitleme
 
 	constructor(
 		@IInstantiationService instantiationService: IInstantiationService,
-		@IProductService productService: IProductService,
+		@IProductService private readonly productService: IProductService,
 		@IWorkbenchEnvironmentService environmentService: IWorkbenchEnvironmentService,
 		@IContextKeyService private readonly contextKeyService: IContextKeyService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
@@ -455,7 +455,8 @@ export class ChatEntitlementService extends Disposable implements IChatEntitleme
 			return;
 		}
 
-		if (!productService.defaultChatAgent) {
+		if (productService.disableBuiltinCopilot || !productService.defaultChatAgent) {
+			ChatEntitlementContextKeys.Setup.hidden.bindTo(this.contextKeyService).set(true);
 			return; // we need a default chat agent configured going forward from here
 		}
 
@@ -732,11 +733,11 @@ export class ChatEntitlementService extends Disposable implements IChatEntitleme
 
 	setForceHidden(hidden: boolean): void {
 		if (this.context) {
-			this.context.value.setForceHidden(hidden);
+			this.context.value.setForceHidden(this.productService.disableBuiltinCopilot || hidden);
 		} else {
 			// No ChatEntitlementContext (e.g. no defaultChatAgent in product.json).
 			// Set the context key directly as a fallback.
-			ChatEntitlementContextKeys.Setup.hidden.bindTo(this.contextKeyService).set(hidden);
+			ChatEntitlementContextKeys.Setup.hidden.bindTo(this.contextKeyService).set(this.productService.disableBuiltinCopilot || hidden);
 		}
 	}
 

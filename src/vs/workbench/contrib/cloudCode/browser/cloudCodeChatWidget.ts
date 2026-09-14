@@ -27,12 +27,14 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 	private readonly progressBar: ProgressBar;
 	private readonly sendButton: Button;
 	private readonly stopButton: Button;
+	private readonly header: HTMLElement;
 	private readonly accountLabel: HTMLElement;
 	private readonly sessionHint: HTMLElement;
 	private readonly accountButton: Button;
-	private readonly newConversationButton: Button;
 	private readonly modelPicker: HTMLElement;
-	private readonly modelSelect: HTMLSelectElement;
+	private readonly modelButton: Button;
+	private models: readonly ICloudCodeModel[] = [];
+	private selectedModel: string | undefined;
 	private readonly retryModelsButton: Button;
 	private readonly errorLabel: HTMLElement;
 	private responseText: Text | undefined;
@@ -57,16 +59,14 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 	private readonly retryModelsEmitter = this._register(new Emitter<void>());
 	readonly onDidRetryModels = this.retryModelsEmitter.event;
 
-	constructor(parent: HTMLElement) {
+	constructor(parent: HTMLElement, private readonly pickModel: (models: readonly ICloudCodeModel[], selected: string | undefined) => Promise<string | undefined> = async () => undefined) {
 		super();
 
 		this.domNode = dom.append(parent, dom.$('.cloudcode-chat'));
-		const header = dom.append(this.domNode, dom.$('.cloudcode-chat-header'));
+		const header = this.header = dom.append(this.domNode, dom.$('.cloudcode-chat-header'));
 		this.accountLabel = dom.append(header, dom.$('.cloudcode-chat-account'));
 		const accountActions = dom.append(header, dom.$('.cloudcode-chat-account-actions'));
 		this.accountButton = this._register(new Button(accountActions, defaultButtonStyles));
-		this.newConversationButton = this._register(new Button(accountActions, { ...defaultButtonStyles, secondary: true }));
-		this.newConversationButton.label = localize('cloudcode.newConversation', "New Chat");
 		this.sessionHint = dom.append(header, dom.$('p.cloudcode-chat-hint'));
 		this.conversation = dom.append(this.domNode, dom.$('.cloudcode-chat-conversation', {
 			role: 'region',
@@ -87,12 +87,6 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 		const composer = dom.append(this.domNode, dom.$('.cloudcode-chat-composer'));
 		this.errorLabel = dom.append(composer, dom.$('p.cloudcode-chat-error', { role: 'alert' }));
 		this.errorLabel.hidden = true;
-		this.modelPicker = dom.append(composer, dom.$('.cloudcode-chat-model-picker'));
-		const modelLabel = dom.append(this.modelPicker, dom.$('label.cloudcode-chat-model-label'));
-		dom.append(modelLabel, dom.$('span')).textContent = localize('cloudcode.model', "Model");
-		this.modelSelect = dom.append(modelLabel, dom.$('select.cloudcode-chat-model'));
-		this.retryModelsButton = this._register(new Button(this.modelPicker, { ...defaultButtonStyles, secondary: true }));
-		this.retryModelsButton.label = localize('cloudcode.retryModels', "Retry");
 		const progress = dom.append(composer, dom.$('.cloudcode-chat-progress'));
 		this.progressBar = this._register(new ProgressBar(progress, {
 			...defaultProgressBarStyles,
@@ -100,14 +94,20 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 		}));
 
 		const promptLabel = dom.append(composer, dom.$('label.cloudcode-chat-prompt-label'));
-		dom.append(promptLabel, dom.$('span')).textContent = localize('cloudcode.message', "Message");
 		this.prompt = dom.append(promptLabel, dom.$('textarea.cloudcode-chat-prompt', {
-			rows: 4,
+			rows: 3,
+			'aria-label': localize('cloudcode.message', "Message"),
 			placeholder: localize('cloudcode.promptPlaceholder', "Ask CloudCode…")
 		}));
 
 		const footer = dom.append(composer, dom.$('.cloudcode-chat-footer'));
-		this.statusLabel = dom.append(footer, dom.$('.cloudcode-chat-status', { role: 'status', 'aria-live': 'polite' }));
+		this.modelPicker = dom.append(footer, dom.$('.cloudcode-chat-model-picker'));
+		this.modelButton = this._register(new Button(this.modelPicker, { ...defaultButtonStyles, secondary: true }));
+		this.modelButton.element.classList.add('cloudcode-chat-model');
+		this.retryModelsButton = this._register(new Button(this.modelPicker, { ...defaultButtonStyles, secondary: true }));
+		this.retryModelsButton.label = localize('cloudcode.retryModels', "Retry");
+
+		this.statusLabel = dom.append(composer, dom.$('.cloudcode-chat-status', { role: 'status', 'aria-live': 'polite' }));
 		const actions = dom.append(footer, dom.$('.cloudcode-chat-actions'));
 		this.stopButton = this._register(new Button(actions, { ...defaultButtonStyles, secondary: true }));
 		this.stopButton.label = localize('cloudcode.stop', "Stop");
@@ -138,9 +138,16 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 				this.signInEmitter.fire();
 			}
 		}));
-		this._register(this.newConversationButton.onDidClick(() => this.newConversationEmitter.fire()));
 		this._register(this.retryModelsButton.onDidClick(() => this.retryModelsEmitter.fire()));
-		this._register(dom.addDisposableListener(this.modelSelect, dom.EventType.CHANGE, () => this.selectModelEmitter.fire(this.modelSelect.value)));
+		this._register(this.modelButton.onDidClick(async () => {
+			const models = this.models;
+			const selected = await this.pickModel(models, this.selectedModel);
+			if (!this._store.isDisposed && selected && models === this.models && this.state.status === 'signedIn' && this.status !== 'running' && this.models.some(model => model.id === selected)) {
+				this.selectedModel = selected;
+				this.updateModelLabel();
+				this.selectModelEmitter.fire(selected);
+			}
+		}));
 		this.setSession(this.state);
 		this.setModels([], undefined, false);
 		this.setStatus('disconnected');
@@ -160,7 +167,9 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 				? localize('cloudcode.cancelSignIn', "Cancel Sign-in")
 				: localize('cloudcode.signIn', "Sign in to CloudCompute");
 		this.accountButton.secondary = state.status !== 'signedOut';
-		this.newConversationButton.element.hidden = state.status !== 'signedIn';
+		this.header.hidden = state.status === 'signedIn' && state.persisted !== false;
+		this.accountLabel.hidden = state.status === 'signedIn';
+		this.accountButton.element.hidden = state.status === 'signedIn';
 		this.modelPicker.hidden = state.status !== 'signedIn';
 		this.sessionHint.hidden = state.status !== 'signedIn' || state.persisted !== false;
 		this.sessionHint.textContent = localize('cloudcode.sessionNotSaved', "This session could not be saved securely. Sign in again after restarting CloudCode.");
@@ -169,16 +178,9 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 
 	setModels(models: readonly ICloudCodeModel[], selected: string | undefined, loading: boolean): void {
 		this.loadingModels = loading;
-		dom.clearNode(this.modelSelect);
-		if (!models.length) {
-			dom.append(this.modelSelect, dom.$('option', { value: '' })).textContent = loading
-				? localize('cloudcode.loadingModels', "Loading models…")
-				: localize('cloudcode.noModel', "No models available");
-		}
-		for (const model of models) {
-			dom.append(this.modelSelect, dom.$('option', { value: model.id })).textContent = model.name;
-		}
-		this.modelSelect.value = selected ?? '';
+		this.models = models;
+		this.selectedModel = selected;
+		this.updateModelLabel();
 		this.retryModelsButton.element.hidden = loading || models.length > 0;
 		this.updateControls();
 	}
@@ -189,7 +191,6 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 		dom.clearNode(this.messages);
 		this.responseText = undefined;
 		this.emptyState.hidden = messages.length > 0;
-		this.newConversationButton.enabled = messages.length > 0;
 		for (const message of messages) {
 			const row = dom.append(this.messages, dom.$('.cloudcode-chat-message'));
 			row.classList.toggle('user', message.role === 'user');
@@ -260,7 +261,20 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 	private updateControls(): void {
 		this.sendButton.enabled = this.status === 'ready' && this.prompt.value.trim().length > 0;
 		this.stopButton.enabled = this.status === 'running';
-		this.modelSelect.disabled = this.loadingModels || this.status === 'running' || !this.modelSelect.value;
+		this.modelButton.enabled = this.state.status === 'signedIn' && !this.loadingModels && this.status !== 'running' && this.models.length > 0;
+		this.stopButton.element.hidden = this.status !== 'running';
+	}
+
+	newConversation(): void {
+		this.newConversationEmitter.fire();
+		this.focus();
+	}
+
+	private updateModelLabel(): void {
+		this.modelButton.label = this.loadingModels
+			? localize('cloudcode.loadingModels', "Loading models…")
+			: this.models.find(model => model.id === this.selectedModel)?.name ?? localize('cloudcode.selectModel', "Select Model…");
+		this.modelButton.element.setAttribute('aria-label', localize('cloudcode.searchModels', "Search Models: {0}", this.modelButton.label));
 	}
 
 	private submit(): void {

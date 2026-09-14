@@ -13,6 +13,7 @@ import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IKeybindingService } from '../../../../platform/keybinding/common/keybinding.js';
 import { IOpenerService } from '../../../../platform/opener/common/opener.js';
+import { IQuickInputService } from '../../../../platform/quickinput/common/quickInput.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { IViewPaneOptions, ViewPane } from '../../../browser/parts/views/viewPane.js';
 import { IViewDescriptorService } from '../../../common/views.js';
@@ -40,6 +41,7 @@ export class CloudCodeChatViewPane extends ViewPane {
 		@IThemeService themeService: IThemeService,
 		@IHoverService hoverService: IHoverService,
 		@ICloudCodeService private readonly cloudCodeService: ICloudCodeService,
+		@IQuickInputService private readonly quickInputService: IQuickInputService,
 		@ILifecycleService lifecycleService: ILifecycleService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
@@ -53,7 +55,15 @@ export class CloudCodeChatViewPane extends ViewPane {
 	protected override renderBody(container: HTMLElement): void {
 		super.renderBody(container);
 		this.bodyContainer = container;
-		this.widget = this._register(new CloudCodeChatWidget(container));
+		this.widget = this._register(new CloudCodeChatWidget(container, async (models, selected) => {
+			const items = models.map(model => ({ label: model.name, description: model.id, id: model.id }));
+			const picked = await this.quickInputService.pick(items, {
+				placeHolder: localize('cloudcode.searchModels', "Search models by name or ID"),
+				matchOnDescription: true,
+				activeItem: items.find(item => item.id === selected),
+			});
+			return picked?.id;
+		}));
 		this.controller = this._register(new CloudCodeChatController(this.widget, this.cloudCodeService));
 		void this.controller.initialize();
 	}
@@ -63,6 +73,10 @@ export class CloudCodeChatViewPane extends ViewPane {
 		if (this.bodyContainer) {
 			size(this.bodyContainer, width, height);
 		}
+	}
+
+	newConversation(): void {
+		this.widget?.newConversation();
 	}
 
 	override focus(): void {

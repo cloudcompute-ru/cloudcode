@@ -3,9 +3,15 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { Disposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
+import { Action2, MenuId, MenuRegistry, registerAction2 } from '../../../../platform/actions/common/actions.js';
+import { ContextKeyExpr, IContextKeyService, RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
+import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
+import { registerWorkbenchContribution2, WorkbenchPhase } from '../../../common/contributions.js';
+import { IViewsService } from '../../../services/views/common/viewsService.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { localize, localize2 } from '../../../../nls.js';
-import { CLOUDCODE_DEFAULT_SERVER, CLOUDCODE_SERVER_SETTING } from '../../../../platform/cloudCode/common/cloudCode.js';
+import { CLOUDCODE_DEFAULT_SERVER, CLOUDCODE_SERVER_SETTING, ICloudCodeService, ICloudCodeState } from '../../../../platform/cloudCode/common/cloudCode.js';
 import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
@@ -57,3 +63,106 @@ Registry.as<IViewsRegistry>(Extensions.ViewsRegistry).registerViews([{
 		order: 0,
 	},
 }], container);
+
+const accountMenu = new MenuId('CloudCodeAccountMenu');
+const signedIn = new RawContextKey<boolean>('cloudcode.signedIn', false);
+const signingIn = new RawContextKey<boolean>('cloudcode.signingIn', false);
+
+MenuRegistry.appendMenuItem(MenuId.MenubarMainMenu, {
+	submenu: accountMenu,
+	title: localize2('cloudcode.accountMenu', "Account"),
+	order: 8,
+});
+
+class CloudCodeAccountContribution extends Disposable {
+	constructor(
+		@ICloudCodeService service: ICloudCodeService,
+		@IContextKeyService contextKeyService: IContextKeyService,
+	) {
+		super();
+		const signedInContext = signedIn.bindTo(contextKeyService);
+		const signingInContext = signingIn.bindTo(contextKeyService);
+		const accountItem = this._register(new MutableDisposable());
+		let revision = 0;
+		const update = (state: ICloudCodeState) => {
+			signedInContext.set(state.status === 'signedIn');
+			signingInContext.set(state.status === 'signingIn');
+			accountItem.clear();
+			if (state.status === 'signedIn' && state.account) {
+				accountItem.value = MenuRegistry.appendMenuItem(accountMenu, {
+					group: '1_account',
+					command: {
+						id: 'cloudcode.accountInfo',
+						title: localize('cloudcode.accountIdentity', "{0} · {1}", state.account.user.name, state.account.team.name),
+						precondition: ContextKeyExpr.false(),
+					},
+				});
+			}
+		};
+		this._register(service.onDidChangeState(state => { revision++; update(state); }));
+		void service.getState().then(state => {
+			if (revision === 0 && !this._store.isDisposed) {
+				update(state);
+			}
+		}, () => { /* Sign-in remains available if restoring the session fails. */ });
+	}
+}
+registerWorkbenchContribution2('cloudcode.account', CloudCodeAccountContribution, WorkbenchPhase.AfterRestored);
+
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: 'cloudcode.signIn',
+			title: localize2('cloudcode.signInAction', "Sign in to CloudCompute"),
+			f1: true,
+			precondition: ContextKeyExpr.and(signedIn.negate(), signingIn.negate()),
+			menu: [
+				{ id: accountMenu, group: '2_session', when: ContextKeyExpr.and(signedIn.negate(), signingIn.negate()) },
+				{ id: MenuId.TitleBar, group: 'navigation', when: ContextKeyExpr.and(signedIn.negate(), signingIn.negate()) },
+			],
+		});
+	}
+	async run(accessor: ServicesAccessor): Promise<void> {
+		await accessor.get(ICloudCodeService).signIn();
+	}
+});
+
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: 'cloudcode.signOut', title: localize2('cloudcode.signOutAction', "Sign Out"),
+			f1: true, precondition: signedIn,
+			menu: { id: accountMenu, group: '2_session', when: signedIn },
+		});
+	}
+	async run(accessor: ServicesAccessor): Promise<void> {
+		await accessor.get(ICloudCodeService).signOut();
+	}
+});
+
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: 'cloudcode.cancelSignIn', title: localize2('cloudcode.cancelSignInAction', "Cancel Sign-in"),
+			f1: true, precondition: signingIn,
+			menu: { id: accountMenu, group: '2_session', when: signingIn },
+		});
+	}
+	async run(accessor: ServicesAccessor): Promise<void> {
+		await accessor.get(ICloudCodeService).cancelSignIn();
+	}
+});
+
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: 'cloudcode.newChat', title: localize2('cloudcode.newChatAction', "New Chat"),
+			icon: Codicon.plus, f1: true,
+			menu: { id: MenuId.ViewTitle, group: 'navigation', when: ContextKeyExpr.equals('view', CloudCodeChatViewPane.ID), order: 0 },
+		});
+	}
+	async run(accessor: ServicesAccessor): Promise<void> {
+		const view = await accessor.get(IViewsService).openView<CloudCodeChatViewPane>(CloudCodeChatViewPane.ID, true);
+		view?.newConversation();
+	}
+});
