@@ -513,6 +513,18 @@ suite('ExtensionsWorkbenchServiceTest', () => {
 		}
 	});
 
+	test('uninstall works without a default chat agent', async () => {
+		const local = aLocalExtension('a');
+		instantiationService.stub(IProductService, { ...TestProductService, defaultChatAgent: undefined! });
+		instantiationService.stubPromise(IExtensionManagementService, 'getInstalled', [local]);
+		const uninstall = sinon.stub().resolves();
+		instantiationService.stub(IWorkbenchExtensionManagementService, 'uninstallExtensions', uninstall);
+		instantiationService.stub(IProgressService, { withProgress: async (_options, task) => task({ report() { } }) });
+		testObject = await aWorkbenchService();
+		await testObject.uninstall(testObject.local[0]);
+		assert.deepStrictEqual(uninstall.firstCall.args[0].map((entry: { extension: ILocalExtension }) => entry.extension.identifier.id), [local.identifier.id]);
+	});
+
 	test('test canInstall returns false for extensions with out gallery', async () => {
 		const local = aLocalExtension('a', { version: '1.0.1' }, { type: ExtensionType.System });
 		instantiationService.stubPromise(IExtensionManagementService, 'getInstalled', [local]);

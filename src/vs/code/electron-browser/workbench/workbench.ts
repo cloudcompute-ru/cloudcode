@@ -22,6 +22,7 @@ import { getPartsSplashColors } from './partsSplash.js';
 
 	const preloadGlobals = (window as unknown as { vscode: IMainWindowSandboxGlobals }).vscode; // defined by preload.ts
 	const safeProcess = preloadGlobals.process;
+	let showDevtoolsOnError = false;
 
 	//#region Splash Screen Helpers
 
@@ -495,6 +496,7 @@ import { getPartsSplashColors } from './partsSplash.js';
 
 		// Developer settings
 		const { enableDeveloperKeybindings, removeDeveloperKeybindingsAfterLoad, developerDeveloperKeybindingsDisposable, forceDisableShowDevtoolsOnError } = setupDeveloperKeybindings(configuration, options);
+		showDevtoolsOnError = enableDeveloperKeybindings && !forceDisableShowDevtoolsOnError;
 
 		// NLS
 		setupNLS<T>(configuration);
@@ -525,7 +527,7 @@ import { getPartsSplashColors } from './partsSplash.js';
 
 			return { result, configuration };
 		} catch (error) {
-			onUnexpectedError(error, enableDeveloperKeybindings && !forceDisableShowDevtoolsOnError);
+			onUnexpectedError(error, showDevtoolsOnError);
 
 			throw error;
 		}
@@ -754,5 +756,9 @@ import { getPartsSplashColors } from './partsSplash.js';
 	performance.mark('code/didLoadWorkbenchMain');
 
 	// Load workbench
-	result.main(configuration);
+	try {
+		await result.main(configuration);
+	} catch (error) {
+		onUnexpectedError(error, showDevtoolsOnError);
+	}
 }());
