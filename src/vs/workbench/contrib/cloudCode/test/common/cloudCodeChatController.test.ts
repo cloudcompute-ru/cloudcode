@@ -5,6 +5,7 @@
 
 import assert from 'assert';
 import { DeferredPromise } from '../../../../../base/common/async.js';
+import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { Emitter } from '../../../../../base/common/event.js';
 import { Disposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
@@ -13,6 +14,7 @@ import { CloudCodeChatStatus, ICloudCodeChatMessage, ICloudCodeChatView } from '
 import { CloudCodeChatController } from '../../common/cloudCodeChatController.js';
 import { formatCloudCodePrompt, ICloudCodeAttachment, ICloudCodeContextProvider } from '../../common/cloudCodeChatContext.js';
 import { CloudCodeChatMode, ICloudCodeEditProposal, ICloudCodeEditProvider, ICloudCodeEditTarget, ICloudCodeProposedEdit } from '../../common/cloudCodeEdits.js';
+import { ICloudCodeAgent } from '../../common/cloudCodeAgent.js';
 
 class TestView extends Disposable implements ICloudCodeChatView {
 	readonly changeMode = this._register(new Emitter<CloudCodeChatMode>());
@@ -105,6 +107,22 @@ class TestEditProvider implements ICloudCodeEditProvider {
 	clear(): void { this.clearCount++; }
 }
 
+class TestAgent implements ICloudCodeAgent {
+	readonly requests: {
+		prompt: string;
+		attachments: readonly ICloudCodeAttachment[];
+		model: string;
+		token: CancellationToken;
+		onProgress: Parameters<ICloudCodeAgent['run']>[4];
+		result: DeferredPromise<Awaited<ReturnType<ICloudCodeAgent['run']>>>;
+	}[] = [];
+	run(prompt: string, attachments: readonly ICloudCodeAttachment[], model: string, token: CancellationToken, onProgress: Parameters<ICloudCodeAgent['run']>[4]): ReturnType<ICloudCodeAgent['run']> {
+		const result = new DeferredPromise<Awaited<ReturnType<ICloudCodeAgent['run']>>>();
+		this.requests.push({ prompt, attachments, model, token, onProgress, result });
+		return result.p;
+	}
+}
+
 const signedIn: ICloudCodeState = {
 	status: 'signedIn',
 	account: {
@@ -145,13 +163,15 @@ suite('CloudCodeChatController', () => {
 	let controller: CloudCodeChatController;
 	let contextProvider: TestContextProvider;
 	let editProvider: TestEditProvider;
+	let agent: TestAgent;
 
 	setup(async () => {
 		service = disposables.add(new TestService());
 		view = disposables.add(new TestView());
 		contextProvider = new TestContextProvider();
 		editProvider = new TestEditProvider();
-		controller = disposables.add(new CloudCodeChatController(view, contextProvider, editProvider, service));
+		agent = new TestAgent();
+		controller = disposables.add(new CloudCodeChatController(view, contextProvider, editProvider, agent, service));
 		await controller.initialize();
 	});
 
@@ -600,6 +620,134 @@ suite('CloudCodeChatController', () => {
 		view.changeMode.fire('ask');
 		view.submit.fire('Start a fresh discussion');
 		assert.deepStrictEqual(service.requests[2].messages, [{ role: 'user', content: 'Start a fresh discussion' }]);
+	});
+
+	test('Agent mode explores without attachments and presents progress without exposing protocol responses', async () => {
+		view.changeMode.fire('agent');
+		view.submit.fire('Find the sign-in handler');
+		const request = agent.requests[0];
+		request.onProgress('Searching for sign-in');
+		request.onProgress('Reading auth.ts');
+		assert.deepStrictEqual({
+			prompt: request.prompt, attachments: request.attachments, model: request.model,
+			status: view.status, requests: service.requests.length, activity: view.messages.at(-1)?.activity
+		}, {
+			prompt: 'Find the sign-in handler', attachments: [], model: 'model',
+			status: 'running', requests: 0, activity: ['Searching for sign-in', 'Reading auth.ts']
+		});
+		await request.result.complete({ text: 'The handler is in auth.ts.', attachments: [editableAttachment], edits: [] });
+		await settleEdits();
+		assert.deepStrictEqual({ text: view.messages.at(-1)?.text, attachments: view.messages.at(-1)?.attachments, status: view.status, proposals: view.proposals }, {
+			text: 'The handler is in auth.ts.', attachments: [editableAttachment], status: 'ready', proposals: []
+		});
+	});
+
+	test('completed Agent answers retain discovered source for Ask follow-ups', async () => {
+		view.changeMode.fire('agent');
+		await attach([editableAttachment]);
+		view.submit.fire('Explain this implementation');
+		const request = agent.requests[0];
+		assert.deepStrictEqual(request.attachments, [editableAttachment]);
+		await request.result.complete({ text: 'The current version is one.', attachments: [editableAttachment], edits: [] });
+		await settleEdits();
+		view.changeMode.fire('ask');
+		view.submit.fire('Why is it one?');
+		assert.deepStrictEqual(service.requests[0].messages, [
+			{ role: 'user', content: formatCloudCodePrompt('Explain this implementation', [editableAttachment]) },
+			{ role: 'assistant', content: 'The current version is one.' },
+			{ role: 'user', content: 'Why is it one?' }
+		]);
+	});
+
+	test('Agent proposals require the existing preview and approval flow before applying source', async () => {
+		view.changeMode.fire('agent');
+		view.submit.fire('Find and fix the version');
+		const edit = { target: { token: 'agent-target', attachment: editableAttachment }, replacement: 'const version = 2;' };
+		await agent.requests[0].result.complete({ text: 'I found the version.', attachments: [editableAttachment], edits: [edit] });
+		await settleEdits();
+		const id = view.proposals[0].id;
+		view.reviewEdit.fire({ id, action: 'accept' });
+		await settleEdits();
+		assert.strictEqual(editProvider.applications.length, 0);
+		view.reviewEdit.fire({ id, action: 'preview' });
+		await settleEdits();
+		view.reviewEdit.fire({ id, action: 'accept' });
+		await settleEdits();
+		assert.deepStrictEqual({ applications: editProvider.applications.map(value => value.replacement), status: view.proposals[0].status }, {
+			applications: ['const version = 2;'], status: 'accepted'
+		});
+	});
+
+	test('Stop cancels Agent work and prevents another task until resource cleanup finishes', async () => {
+		view.changeMode.fire('agent');
+		view.submit.fire('First task');
+		const request = agent.requests[0];
+		request.onProgress('Reading main.ts');
+		view.stop.fire();
+		request.onProgress('This late progress must be ignored');
+		view.submit.fire('Too early');
+		assert.deepStrictEqual({ cancelled: request.token.isCancellationRequested, requests: agent.requests.length, activity: view.messages.at(-1)?.activity }, {
+			cancelled: true, requests: 1, activity: ['Reading main.ts']
+		});
+		await request.result.complete({ text: 'Late answer', attachments: [editableAttachment], edits: [{ target: { token: 'late', attachment: editableAttachment }, replacement: 'late edit' }] });
+		await settleEdits();
+		assert.deepStrictEqual({ proposals: view.proposals, incomplete: view.messages.at(-1)?.incomplete, status: view.status }, { proposals: [], incomplete: true, status: 'ready' });
+		view.changeMode.fire('ask');
+		view.submit.fire('Fresh question');
+		assert.deepStrictEqual(service.requests[0].messages, [{ role: 'user', content: 'Fresh question' }]);
+	});
+
+	for (const reset of ['newChat', 'accountChange', 'signOut', 'dispose'] as const) {
+		test(reset + ' cancels Agent work and suppresses late progress, answers and proposals', async () => {
+			view.changeMode.fire('agent');
+			view.submit.fire('Read private project context');
+			const request = agent.requests[0];
+			switch (reset) {
+				case 'newChat': view.newConversation.fire(); break;
+				case 'accountChange': service.stateEmitter.fire({ ...signedIn, account: { ...signedIn.account!, team: { id: 2, name: 'Other team' } } }); break;
+				case 'signOut': view.signOut.fire(); break;
+				case 'dispose': controller.dispose(); break;
+			}
+			const messages = view.messages;
+			request.onProgress('Private filename');
+			await request.result.complete({ text: 'Private answer', attachments: [editableAttachment], edits: [{ target: { token: 'private', attachment: editableAttachment }, replacement: 'private edit' }] });
+			await settleEdits();
+			assert.deepStrictEqual({ cancelled: request.token.isCancellationRequested, messages: view.messages, proposals: view.proposals, applications: editProvider.applications }, {
+				cancelled: true, messages, proposals: [], applications: []
+			});
+		});
+	}
+
+	test('a failed Agent run shows the failure and excludes discovered source from future history', async () => {
+		view.changeMode.fire('agent');
+		view.submit.fire('Find the handler');
+		const request = agent.requests[0];
+		request.onProgress('Reading auth.ts');
+		await request.result.error(new Error('The workspace changed'));
+		await settleEdits();
+		assert.deepStrictEqual({ error: view.error, incomplete: view.messages.at(-1)?.incomplete, proposals: view.proposals, status: view.status }, {
+			error: 'The workspace changed', incomplete: true, proposals: [], status: 'ready'
+		});
+		view.changeMode.fire('ask');
+		view.submit.fire('Next question');
+		assert.deepStrictEqual(service.requests[0].messages, [{ role: 'user', content: 'Next question' }]);
+	});
+
+	test('an account switch reloads models after the cancelled Agent releases its resources', async () => {
+		view.changeMode.fire('agent');
+		view.submit.fire('First team task');
+		const request = agent.requests[0];
+		service.modelResult = Promise.resolve([{ id: 'new-team-model', name: 'New Team Model' }]);
+		service.stateEmitter.fire({ ...signedIn, account: { ...signedIn.account!, team: { id: 2, name: 'Other team' } } });
+		await request.result.complete({ text: 'Old account answer', attachments: [], edits: [] });
+		await settleEdits();
+		assert.deepStrictEqual({ models: view.models, status: view.status, messages: view.messages }, {
+			models: [{ id: 'new-team-model', name: 'New Team Model' }], status: 'ready', messages: []
+		});
+		view.submit.fire('New team task');
+		assert.strictEqual(agent.requests[1].model, 'new-team-model');
+		await agent.requests[1].result.complete({ text: 'New team answer', attachments: [], edits: [] });
+		await settleEdits();
 	});
 
 });

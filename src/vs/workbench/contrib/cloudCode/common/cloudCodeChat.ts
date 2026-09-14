@@ -13,6 +13,7 @@ export interface ICloudCodeChatMessage {
 	readonly text: string;
 	readonly incomplete?: boolean;
 	readonly attachments?: readonly ICloudCodeAttachment[];
+	readonly activity?: readonly string[];
 }
 
 export type CloudCodeChatStatus = 'disconnected' | 'loading' | 'ready' | 'running';

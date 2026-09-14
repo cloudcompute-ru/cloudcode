@@ -1,6 +1,6 @@
 # CloudCode development and sign-in
 
-CloudCode opens CloudCompute's existing browser login, requests consent for the selected team, and streams chat responses in **View → CloudCode Chat**. Users do not copy API keys or client secrets into the editor. Chat supports explicitly attached text files and selections, plus proposed edits with native diff review and Accept/Reject controls. It does not explore the project automatically or run agent tools.
+CloudCode opens CloudCompute's existing browser login, requests consent for the selected team, and streams chat responses in **View → CloudCode Chat**. Users do not copy API keys or client secrets into the editor. Chat supports explicitly attached text files and selections, automatic project exploration in Agent mode, and proposed edits with native diff review and Accept/Reject controls.
 
 ## Backend setup
 
@@ -54,13 +54,28 @@ Credentials remain in the native shared process and use protected secret storage
 
 ## Attach project context
 
-Use **Attach…** above the prompt and choose **Current File**, **Selected Code**, or **Choose Files…**. Active files, selections and already-open chosen files include unsaved editor changes. Files are read only when you explicitly attach them; file contents reach inference only when you send a message.
+Use **Attach…** above the prompt and choose **Current File**, **Selected Code**, or **Choose Files…**. Active files, selections and already-open chosen files include unsaved editor changes. In Ask and Propose Edits modes, files are read only when you explicitly attach them; file contents reach inference only when you send a message. Agent mode can also discover and read project files while handling your request.
 
 Each attachment is a snapshot taken when attached. Expand its name to inspect the exact text, or choose **Remove** to exclude it. Reattach the same file or range to refresh a snapshot after editing. Sent messages retain expandable copies of their attachments. Successful turns carry those snapshots into subsequent conversation context; stopped or failed turns are excluded, including their attachments.
 
 Limits are five files/selections per message, 16 KiB per attachment and 24 KiB total, measured as UTF-8. The existing per-message and conversation limits also apply to the serialized text. An oversized request preserves your draft and pending attachments; choose a smaller selection or remove an attachment. Binary files and unsupported resource types are rejected. Attaching and resending source context requires a trusted workspace. For current-file/selection attachments, open the file in a regular text editor rather than a diff view.
 
 Local and remote text files are supported. Active untitled text buffers can also be attached. Labels use workspace-relative paths (with the folder name in multi-root workspaces); explicitly chosen files outside the workspace use their basename. Machine-specific URI identifiers are never included in inference content.
+
+## Explore a project with Agent mode
+
+1. Open a trusted project and select **Agent** beside the model selector.
+2. Describe a question or change. Attaching an initial file or selection is optional.
+3. Follow the progress in the chat and expand **Agent Activity** to inspect the actions taken. The model can list directories, find filenames, search literal text and read files or line ranges across the opened workspace folders.
+4. Read the answer or review proposed changes with **Preview Diff**, then **Accept** or **Reject** for each file. Agent mode never applies a change automatically.
+
+Automatic discovery respects search exclusions and ignore files, including global and parent ignore files. It also excludes common generated directories, secret files and symbolic links. These filters are safeguards, not a guarantee that ordinary source files contain no sensitive information. Relevant search snippets and file contents are sent through the existing CloudCompute inference connection. Reads use unsaved text when the file is open. Local and remote workspaces are supported; trust loss or a workspace-folder change invalidates the active task.
+
+Each task starts with the current instruction and attached snapshots, independently of earlier chat. It is limited to 12 model calls and three minutes. Reads are bounded to 16 KiB, line-range reads to 200 lines, and retained snapshots to five files/selections and 24 KiB combined. Search results and total model context are also bounded. The final response exposes retained snapshots as expandable attachments. A successful answer can be followed up in Ask mode; a new Agent task explores afresh.
+
+**Stop** cancels exploration and the active desktop inference request. No further tools or edits are accepted from that task. New Chat and account changes also invalidate its results. Provider generation and billing may continue as described above. Stopped or failed tasks produce no actionable edits.
+
+Agent mode uses the existing chat endpoint without a backend change. The model must follow a structured action format; malformed actions stop the task with an error. It can propose replacements only for captured files or selections. Creating/deleting files, terminal commands and automatic saves are outside this mode.
 
 ## Propose and review code changes
 
@@ -87,6 +102,7 @@ npm run test-node -- --run src/vs/platform/cloudCode/test/node/cloudCodeService.
 npm run test-node -- --run src/vs/workbench/contrib/cloudCode/test/common/cloudCodeChatController.test.ts
 npm run test-node -- --run src/vs/workbench/contrib/cloudCode/test/common/cloudCodeChatContext.test.ts
 npm run test-node -- --run src/vs/workbench/contrib/cloudCode/test/common/cloudCodeEdits.test.ts
+npm run test-node -- --run src/vs/workbench/contrib/cloudCode/test/common/cloudCodeAgent.test.ts
 ```
 
-The existing component explorer exposes the `cloudCode/` fixtures for signed-out, browser sign-in, model loading, conversation, streaming, error, and stopped states in light and dark themes. Full sign-in verification requires the deployed backend client configured above.
+The browser suites also cover `cloudCodeAgentWorkspace.test.ts`, `cloudCodeContextProvider.test.ts` and `cloudCodeEditWorkspace.test.ts`. The existing component explorer exposes the `cloudCode/` fixtures for signed-out, browser sign-in, model loading, conversation, streaming, error, and stopped states in light and dark themes. Full sign-in and Agent inference verification requires the deployed backend client configured above.

@@ -83,7 +83,11 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 	private readonly retryModelsEmitter = this._register(new Emitter<void>());
 	readonly onDidRetryModels = this.retryModelsEmitter.event;
 
-	constructor(parent: HTMLElement, private readonly pickModel: (models: readonly ICloudCodeModel[], selected: string | undefined) => Promise<string | undefined> = async () => undefined) {
+	constructor(
+		parent: HTMLElement,
+		private readonly pickModel: (models: readonly ICloudCodeModel[], selected: string | undefined) => Promise<string | undefined> = async () => undefined,
+		private readonly pickMode: (mode: CloudCodeChatMode) => Promise<CloudCodeChatMode | undefined> = async mode => mode === 'ask' ? 'agent' : mode === 'agent' ? 'edit' : 'ask',
+	) {
 		super();
 
 		this.domNode = dom.append(parent, dom.$('.cloudcode-chat'));
@@ -143,10 +147,12 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 		this.modelPicker = dom.append(footer, dom.$('.cloudcode-chat-model-picker'));
 		this.modeButton = this._register(new Button(this.modelPicker, { ...defaultButtonStyles, secondary: true }));
 		this.modeButton.element.classList.add('cloudcode-chat-mode');
-		this.modeButton.element.setAttribute('aria-label', localize('cloudcode.editModeToggle', "Propose Edits mode"));
-		this._register(this.modeButton.onDidClick(() => {
-			if (this.modeButton.enabled) {
-				this.changeModeEmitter.fire(this.mode === 'ask' ? 'edit' : 'ask');
+		this.modeButton.element.setAttribute('aria-haspopup', 'listbox');
+		this._register(this.modeButton.onDidClick(async () => {
+			const previous = this.mode;
+			const selected = await this.pickMode(previous);
+			if (!this._store.isDisposed && this.modeButton.enabled && this.mode === previous && selected) {
+				this.changeModeEmitter.fire(selected);
 			}
 		}));
 		this.modelButton = this._register(new Button(this.modelPicker, { ...defaultButtonStyles, secondary: true }));
@@ -206,11 +212,11 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 		this.mode = mode;
 		this.modeButton.label = mode === 'edit'
 			? localize('cloudcode.proposeEdits', "Propose Edits")
-			: localize('cloudcode.askMode', "Ask");
-		this.modeButton.element.setAttribute('aria-pressed', String(mode === 'edit'));
+			: mode === 'agent' ? localize('cloudcode.agentMode', "Agent") : localize('cloudcode.askMode', "Ask");
+		this.modeButton.element.setAttribute('aria-label', localize('cloudcode.chooseMode', "Choose Chat Mode: {0}", this.modeButton.label));
 		this.prompt.placeholder = mode === 'edit'
 			? localize('cloudcode.editPromptPlaceholder', "Describe changes to attached files…")
-			: localize('cloudcode.promptPlaceholder', "Ask CloudCode…");
+			: mode === 'agent' ? localize('cloudcode.agentPromptPlaceholder', "Ask about your project or describe a change…") : localize('cloudcode.promptPlaceholder', "Ask CloudCode…");
 		this.updateControls();
 	}
 
@@ -358,6 +364,11 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 				: localize('cloudcode.assistant', "CloudCode");
 			for (const attachment of message.attachments ?? []) {
 				this.renderAttachment(row, attachment);
+			}
+			if (message.activity?.length) {
+				const activity = dom.append(row, dom.$('details.cloudcode-chat-attachment-preview'));
+				dom.append(activity, dom.$('summary')).textContent = localize('cloudcode.agentActivity', "Agent Activity");
+				dom.append(activity, dom.$('pre')).textContent = message.activity.join('\n');
 			}
 			const body = dom.append(row, dom.$('p'));
 			const text = body.ownerDocument.createTextNode(message.text);
