@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import product from '../../../../platform/product/common/product.js';
 import { coalesce, isNonEmptyArray } from '../../../../base/common/arrays.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { toErrorMessage } from '../../../../base/common/errorMessage.js';
@@ -69,6 +70,7 @@ const chatViewDescriptor: IViewDescriptor = {
 	},
 	ctorDescriptor: new SyncDescriptor(ChatViewPane),
 	when: ContextKeyExpr.and(
+		product.disableBuiltinCopilot ? ContextKeyExpr.false() : ContextKeyExpr.true(),
 		ChatContextKeys.accountPolicyGateActive.negate(),
 		ContextKeyExpr.or(
 			ContextKeyExpr.and(
