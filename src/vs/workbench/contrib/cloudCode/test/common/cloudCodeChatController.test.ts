@@ -11,8 +11,13 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { CLOUDCODE_MAX_MESSAGE_LENGTH, ICloudCodeChatDelta, ICloudCodeMessage, ICloudCodeModel, ICloudCodeService, ICloudCodeState } from '../../../../../platform/cloudCode/common/cloudCode.js';
 import { CloudCodeChatStatus, ICloudCodeChatMessage, ICloudCodeChatView } from '../../common/cloudCodeChat.js';
 import { CloudCodeChatController } from '../../common/cloudCodeChatController.js';
+import { formatCloudCodePrompt, ICloudCodeAttachment, ICloudCodeContextProvider } from '../../common/cloudCodeChatContext.js';
 
 class TestView extends Disposable implements ICloudCodeChatView {
+	readonly requestAttachments = this._register(new Emitter<void>());
+	readonly onDidRequestAttachments = this.requestAttachments.event;
+	readonly removeAttachment = this._register(new Emitter<string>());
+	readonly onDidRemoveAttachment = this.removeAttachment.event;
 	readonly submit = this._register(new Emitter<string>());
 	readonly onDidSubmit = this.submit.event;
 	readonly stop = this._register(new Emitter<void>());
@@ -35,6 +40,12 @@ class TestView extends Disposable implements ICloudCodeChatView {
 	status: CloudCodeChatStatus = 'disconnected';
 	error: string | undefined;
 	draft = '';
+	attachments: readonly ICloudCodeAttachment[] = [];
+	loadingAttachments = false;
+	setAttachments(attachments: readonly ICloudCodeAttachment[], loading: boolean): void {
+		this.attachments = attachments;
+		this.loadingAttachments = loading;
+	}
 	setSession(state: ICloudCodeState): void { this.state = state; }
 	setModels(models: readonly ICloudCodeModel[]): void { this.models = models; }
 	setMessages(messages: readonly ICloudCodeChatMessage[]): void { this.messages = [...messages]; }
@@ -45,6 +56,17 @@ class TestView extends Disposable implements ICloudCodeChatView {
 	setStatus(status: CloudCodeChatStatus): void { this.status = status; }
 	setError(message: string | undefined): void { this.error = message; }
 	setDraft(value: string): void { this.draft = value; }
+}
+
+class TestContextProvider implements ICloudCodeContextProvider {
+	result: Promise<readonly ICloudCodeAttachment[]> = Promise.resolve([]);
+	trusted = true;
+	pickAttachments(): Promise<readonly ICloudCodeAttachment[]> { return this.result; }
+	assertWorkspaceTrusted(): void {
+		if (!this.trusted) {
+			throw new Error('Workspace is not trusted');
+		}
+	}
 }
 
 const signedIn: ICloudCodeState = {
@@ -85,13 +107,23 @@ suite('CloudCodeChatController', () => {
 	let service: TestService;
 	let view: TestView;
 	let controller: CloudCodeChatController;
+	let contextProvider: TestContextProvider;
 
 	setup(async () => {
 		service = disposables.add(new TestService());
 		view = disposables.add(new TestView());
-		controller = disposables.add(new CloudCodeChatController(view, service));
+		contextProvider = new TestContextProvider();
+		controller = disposables.add(new CloudCodeChatController(view, contextProvider, service));
 		await controller.initialize();
 	});
+
+	async function attach(attachments: readonly ICloudCodeAttachment[]): Promise<void> {
+		const result = new DeferredPromise<readonly ICloudCodeAttachment[]>();
+		contextProvider.result = result.p;
+		view.requestAttachments.fire();
+		await result.complete(attachments);
+		await Promise.resolve();
+	}
 
 	test('streams only matching request deltas and carries completed turns forward', async () => {
 		view.submit.fire('First question');
@@ -214,5 +246,127 @@ suite('CloudCodeChatController', () => {
 		view.submit.fire(prompt);
 		assert.deepStrictEqual({ requests: service.requests.length, draft: view.draft, status: view.status }, { requests: 1, draft: prompt, status: 'ready' });
 		assert.ok(view.error?.includes('New Chat'));
+	});
+
+	test('attached snapshots stay local until submit and completed turns retain their serialized context', async () => {
+		const source = { id: 'file:///private/project/src/main.ts', label: 'src/main.ts', content: 'const version = 1;', languageId: 'typescript' };
+		await attach([source]);
+		assert.strictEqual(service.requests.length, 0);
+		source.content = 'const version = 2;';
+		const snapshot = { ...source, content: 'const version = 1;' };
+		view.submit.fire('Explain this code');
+		const first = service.requests[0];
+		service.deltas.fire({ requestId: first.id, text: 'It declares a constant.' });
+		await first.result.complete({ cancelled: false });
+		view.submit.fire('What is its value?');
+		assert.deepStrictEqual({ displayed: view.messages[0], attachments: view.attachments, context: service.requests[1].messages }, {
+			displayed: { role: 'user', text: 'Explain this code', attachments: [snapshot] },
+			attachments: [],
+			context: [
+				{ role: 'user', content: formatCloudCodePrompt('Explain this code', [snapshot]) },
+				{ role: 'assistant', content: 'It declares a constant.' },
+				{ role: 'user', content: 'What is its value?' }
+			]
+		});
+	});
+
+	test('reselecting an attachment replaces its snapshot and removal excludes it from the request', async () => {
+		const file = { id: 'file', label: 'file.ts', content: 'old' };
+		const selection = { id: 'selection', label: 'file.ts', content: 'selected', startLine: 3, endLine: 4 };
+		await attach([file, selection]);
+		await attach([{ ...file, content: 'new' }]);
+		view.removeAttachment.fire('selection');
+		assert.deepStrictEqual(view.attachments, [{ ...file, content: 'new' }]);
+		view.removeAttachment.fire('file');
+		view.submit.fire('No files');
+		assert.deepStrictEqual(service.requests[0].messages, [{ role: 'user', content: 'No files' }]);
+	});
+
+	test('oversized serialized requests preserve both the question and attached snapshots', async () => {
+		const attachment = { id: 'file', label: 'file.ts', content: 'x'.repeat(16 * 1024) };
+		await attach([attachment]);
+		const prompt = 'q'.repeat(20 * 1024);
+		view.submit.fire(prompt);
+		assert.deepStrictEqual({ requests: service.requests.length, draft: view.draft, attachments: view.attachments, status: view.status }, {
+			requests: 0, draft: prompt, attachments: [attachment], status: 'ready'
+		});
+		assert.ok(view.error);
+	});
+
+	test('a rejected attachment batch leaves the existing draft intact', async () => {
+		const attachment = { id: 'file', label: 'file.ts', content: 'keep me' };
+		await attach([attachment]);
+		await attach([{ id: 'large', label: 'large.ts', content: '界'.repeat(6000) }]);
+		assert.deepStrictEqual({ attachments: view.attachments, loading: view.loadingAttachments, requests: service.requests.length }, {
+			attachments: [attachment], loading: false, requests: 0
+		});
+		assert.ok(view.error);
+	});
+
+	test('submit is blocked until the explicit attachment read finishes', async () => {
+		const result = new DeferredPromise<readonly ICloudCodeAttachment[]>();
+		contextProvider.result = result.p;
+		view.requestAttachments.fire();
+		view.submit.fire('Must not omit the file');
+		assert.deepStrictEqual({ requests: service.requests.length, loading: view.loadingAttachments }, { requests: 0, loading: true });
+		await result.complete([{ id: 'file', label: 'file.ts', content: 'read result' }]);
+		await Promise.resolve();
+		assert.strictEqual(view.loadingAttachments, false);
+	});
+
+	for (const reset of ['newChat', 'accountChange', 'signOut', 'dispose'] as const) {
+		test(`${reset} ignores attachment results from an earlier conversation`, async () => {
+			const result = new DeferredPromise<readonly ICloudCodeAttachment[]>();
+			contextProvider.result = result.p;
+			view.requestAttachments.fire();
+			switch (reset) {
+				case 'newChat': view.newConversation.fire(); break;
+				case 'accountChange': service.stateEmitter.fire({ ...signedIn, account: { ...signedIn.account!, team: { id: 2, name: 'Other team' } } }); break;
+				case 'signOut': view.signOut.fire(); break;
+				case 'dispose': controller.dispose(); break;
+			}
+			await result.complete([{ id: 'private', label: 'private.ts', content: 'old account data' }]);
+			await Promise.resolve();
+			assert.deepStrictEqual(view.attachments, []);
+		});
+	}
+
+	for (const outcome of ['cancelled', 'failed'] as const) {
+		test(`${outcome} turns do not resend their attachments in later requests`, async () => {
+			await attach([{ id: 'file', label: 'file.ts', content: 'discarded context' }]);
+			view.submit.fire('First question');
+			const first = service.requests[0];
+			if (outcome === 'cancelled') {
+				view.stop.fire();
+				await first.result.complete({ cancelled: true });
+			} else {
+				await first.result.error(new Error('Request failed'));
+			}
+			view.submit.fire('Next question');
+			assert.deepStrictEqual(service.requests[1].messages, [{ role: 'user', content: 'Next question' }]);
+		});
+	}
+
+	test('revoked workspace trust blocks both new attachments and retained source history', async () => {
+		const attachment = { id: 'file', label: 'file.ts', content: 'private code' };
+		await attach([attachment]);
+		contextProvider.trusted = false;
+		view.submit.fire('First question');
+		assert.deepStrictEqual({ requests: service.requests.length, attachments: view.attachments, error: view.error }, {
+			requests: 0, attachments: [attachment], error: 'Workspace is not trusted'
+		});
+		contextProvider.trusted = true;
+		view.submit.fire('First question');
+		const first = service.requests[0];
+		service.deltas.fire({ requestId: first.id, text: 'Response' });
+		await first.result.complete({ cancelled: false });
+		contextProvider.trusted = false;
+		view.submit.fire('Follow up');
+		assert.deepStrictEqual({ requests: service.requests.length, error: view.error, attachments: view.attachments }, {
+			requests: 1, error: 'Workspace is not trusted', attachments: []
+		});
+		view.newConversation.fire();
+		view.submit.fire('Question without project context');
+		assert.deepStrictEqual(service.requests[1].messages, [{ role: 'user', content: 'Question without project context' }]);
 	});
 });

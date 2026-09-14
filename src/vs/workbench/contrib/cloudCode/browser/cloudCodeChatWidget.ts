@@ -8,10 +8,11 @@ import * as dom from '../../../../base/browser/dom.js';
 import { Button } from '../../../../base/browser/ui/button/button.js';
 import { ProgressBar } from '../../../../base/browser/ui/progressbar/progressbar.js';
 import { Emitter } from '../../../../base/common/event.js';
-import { Disposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
 import { ICloudCodeModel, ICloudCodeState } from '../../../../platform/cloudCode/common/cloudCode.js';
 import { defaultButtonStyles, defaultProgressBarStyles } from '../../../../platform/theme/browser/defaultStyles.js';
+import { ICloudCodeAttachment } from '../common/cloudCodeChatContext.js';
 import { CloudCodeChatStatus, ICloudCodeChatMessage, ICloudCodeChatView } from '../common/cloudCodeChat.js';
 
 /** Presentation only; browser sign-in and inference run through the controller. */
@@ -22,6 +23,11 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 	private readonly emptyState: HTMLElement;
 	private readonly messages: HTMLElement;
 	private readonly prompt: HTMLTextAreaElement;
+	private readonly attachButton: Button;
+	private readonly attachmentsNode: HTMLElement;
+	private readonly attachmentHint: HTMLElement;
+	private readonly attachmentDisposables = this._register(new DisposableStore());
+	private loadingAttachments = false;
 	private readonly statusLabel: HTMLElement;
 	private readonly connectionHint: HTMLElement;
 	private readonly progressBar: ProgressBar;
@@ -42,6 +48,10 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 	private loadingModels = false;
 	private status: CloudCodeChatStatus = 'disconnected';
 
+	private readonly requestAttachmentsEmitter = this._register(new Emitter<void>());
+	readonly onDidRequestAttachments = this.requestAttachmentsEmitter.event;
+	private readonly removeAttachmentEmitter = this._register(new Emitter<string>());
+	readonly onDidRemoveAttachment = this.removeAttachmentEmitter.event;
 	private readonly submitEmitter = this._register(new Emitter<string>());
 	readonly onDidSubmit = this.submitEmitter.event;
 	private readonly stopEmitter = this._register(new Emitter<void>());
@@ -76,7 +86,7 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 
 		this.emptyState = dom.append(this.conversation, dom.$('.cloudcode-chat-empty'));
 		dom.append(this.emptyState, dom.$('h2')).textContent = localize('cloudcode.welcome', "Start a conversation");
-		dom.append(this.emptyState, dom.$('p')).textContent = localize('cloudcode.welcomeDetail', "Ask a coding question or paste a snippet. Project files are not attached automatically.");
+		dom.append(this.emptyState, dom.$('p')).textContent = localize('cloudcode.welcomeDetail', "Ask a coding question, paste a snippet, or attach files and selections for context.");
 		this.messages = dom.append(this.conversation, dom.$('.cloudcode-chat-messages', {
 			role: 'log',
 			'aria-label': localize('cloudcode.messages', "Chat messages"),
@@ -87,6 +97,12 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 		const composer = dom.append(this.domNode, dom.$('.cloudcode-chat-composer'));
 		this.errorLabel = dom.append(composer, dom.$('p.cloudcode-chat-error', { role: 'alert' }));
 		this.errorLabel.hidden = true;
+		const attachmentToolbar = dom.append(composer, dom.$('.cloudcode-chat-attachment-toolbar'));
+		this.attachButton = this._register(new Button(attachmentToolbar, { ...defaultButtonStyles, secondary: true }));
+		this.attachButton.label = localize('cloudcode.attach', "Attach…");
+		this.attachmentHint = dom.append(attachmentToolbar, dom.$('.cloudcode-chat-hint'));
+		this.attachmentsNode = dom.append(composer, dom.$('.cloudcode-chat-attachments', { 'aria-label': localize('cloudcode.attachments', "Attachments"), role: 'list' }));
+		this._register(this.attachButton.onDidClick(() => this.requestAttachmentsEmitter.fire()));
 		const progress = dom.append(composer, dom.$('.cloudcode-chat-progress'));
 		this.progressBar = this._register(new ProgressBar(progress, {
 			...defaultProgressBarStyles,
@@ -148,9 +164,35 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 				this.selectModelEmitter.fire(selected);
 			}
 		}));
+		this.setAttachments([], false);
 		this.setSession(this.state);
 		this.setModels([], undefined, false);
 		this.setStatus('disconnected');
+	}
+
+	setAttachments(attachments: readonly ICloudCodeAttachment[], loading: boolean): void {
+		this.loadingAttachments = loading;
+		this.attachmentDisposables.clear();
+		dom.clearNode(this.attachmentsNode);
+		this.attachmentsNode.hidden = attachments.length === 0;
+		this.attachmentHint.textContent = loading
+			? localize('cloudcode.readingAttachments', "Reading attachments…")
+			: attachments.length ? localize('cloudcode.snapshotHint', "Snapshots for your next message") : '';
+		for (const attachment of attachments) {
+			const row = dom.append(this.attachmentsNode, dom.$('.cloudcode-chat-attachment', { role: 'listitem' }));
+			this.renderAttachment(row, attachment);
+			const remove = this.attachmentDisposables.add(new Button(row, { ...defaultButtonStyles, secondary: true }));
+			remove.label = localize('cloudcode.removeAttachment', "Remove");
+			remove.element.setAttribute('aria-label', localize('cloudcode.removeNamedAttachment', "Remove {0}", attachment.label));
+			this.attachmentDisposables.add(remove.onDidClick(() => this.removeAttachmentEmitter.fire(attachment.id)));
+		}
+		this.updateControls();
+	}
+
+	private renderAttachment(parent: HTMLElement, attachment: ICloudCodeAttachment): void {
+		const details = dom.append(parent, dom.$('details.cloudcode-chat-attachment-preview'));
+		dom.append(details, dom.$('summary')).textContent = localize('cloudcode.attachmentSummary', "{0} ({1} KiB)", attachment.label, (new TextEncoder().encode(attachment.content).byteLength / 1024).toFixed(1));
+		dom.append(details, dom.$('pre')).textContent = attachment.content;
 	}
 
 	setSession(state: ICloudCodeState): void {
@@ -197,6 +239,9 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 			dom.append(row, dom.$('h3')).textContent = message.role === 'user'
 				? localize('cloudcode.user', "You")
 				: localize('cloudcode.assistant', "CloudCode");
+			for (const attachment of message.attachments ?? []) {
+				this.renderAttachment(row, attachment);
+			}
 			const body = dom.append(row, dom.$('p'));
 			const text = body.ownerDocument.createTextNode(message.text);
 			body.appendChild(text);
@@ -259,7 +304,8 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 	}
 
 	private updateControls(): void {
-		this.sendButton.enabled = this.status === 'ready' && this.prompt.value.trim().length > 0;
+		this.sendButton.enabled = !this.loadingAttachments && this.status === 'ready' && this.prompt.value.trim().length > 0;
+		this.attachButton.enabled = this.state.status === 'signedIn' && this.status !== 'running' && !this.loadingAttachments;
 		this.stopButton.enabled = this.status === 'running';
 		this.modelButton.enabled = this.state.status === 'signedIn' && !this.loadingModels && this.status !== 'running' && this.models.length > 0;
 		this.stopButton.element.hidden = this.status !== 'running';
@@ -279,7 +325,7 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 
 	private submit(): void {
 		const prompt = this.prompt.value.trim();
-		if (this.status !== 'ready' || !prompt) {
+		if (this.status !== 'ready' || this.loadingAttachments || !prompt) {
 			return;
 		}
 		this.prompt.value = '';

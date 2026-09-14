@@ -19,6 +19,8 @@ import { IViewPaneOptions, ViewPane } from '../../../browser/parts/views/viewPan
 import { IViewDescriptorService } from '../../../common/views.js';
 import { ILifecycleService } from '../../../services/lifecycle/common/lifecycle.js';
 import { CloudCodeChatWidget } from './cloudCodeChatWidget.js';
+import { CloudCodeContext } from './cloudCodeContext.js';
+import { CloudCodeAttachmentKind } from '../common/cloudCodeChatContext.js';
 import { CloudCodeChatController } from '../common/cloudCodeChatController.js';
 
 export class CloudCodeChatViewPane extends ViewPane {
@@ -28,6 +30,7 @@ export class CloudCodeChatViewPane extends ViewPane {
 	private bodyContainer: HTMLElement | undefined;
 	private widget: CloudCodeChatWidget | undefined;
 	private controller: CloudCodeChatController | undefined;
+	private readonly context: CloudCodeContext;
 
 	constructor(
 		options: IViewPaneOptions,
@@ -45,6 +48,7 @@ export class CloudCodeChatViewPane extends ViewPane {
 		@ILifecycleService lifecycleService: ILifecycleService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
+		this.context = instantiationService.createInstance(CloudCodeContext);
 		this._register(lifecycleService.onWillShutdown(event => {
 			if (this.controller) {
 				event.join(this.controller.shutdown(), { id: 'cloudcode.chat', label: localize('cloudcode.stoppingChat', "Stopping CloudCode chat") });
@@ -64,7 +68,19 @@ export class CloudCodeChatViewPane extends ViewPane {
 			});
 			return picked?.id;
 		}));
-		this.controller = this._register(new CloudCodeChatController(this.widget, this.cloudCodeService));
+		this.controller = this._register(new CloudCodeChatController(this.widget, {
+			assertWorkspaceTrusted: () => this.context.assertWorkspaceTrusted(),
+			pickAttachments: async () => {
+				this.context.assertWorkspaceTrusted();
+				const items: { label: string; description: string; kind: CloudCodeAttachmentKind }[] = [
+					{ label: localize('cloudcode.attachFile', "Current File"), description: localize('cloudcode.attachFileDetail', "Include unsaved changes"), kind: 'file' },
+					{ label: localize('cloudcode.attachSelection', "Selected Code"), description: localize('cloudcode.attachSelectionDetail', "Only the selected code"), kind: 'selection' },
+					{ label: localize('cloudcode.attachFiles', "Choose Files…"), description: localize('cloudcode.attachFilesDetail', "Select one or more text files"), kind: 'files' },
+				];
+				const picked = await this.quickInputService.pick(items, { placeHolder: localize('cloudcode.attachContext', "Attach code to your next message") });
+				return picked ? this.context.readAttachments(picked.kind) : [];
+			}
+		}, this.cloudCodeService));
 		void this.controller.initialize();
 	}
 

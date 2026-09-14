@@ -7,6 +7,7 @@ import { Disposable } from '../../../../base/common/lifecycle.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { localize } from '../../../../nls.js';
 import { CLOUDCODE_MAX_CONTEXT_BYTES, CLOUDCODE_MAX_MESSAGE_LENGTH, CLOUDCODE_MAX_MESSAGES, ICloudCodeMessage, ICloudCodeModel, ICloudCodeService, ICloudCodeState } from '../../../../platform/cloudCode/common/cloudCode.js';
+import { formatCloudCodePrompt, ICloudCodeAttachment, ICloudCodeContextProvider, mergeCloudCodeAttachments } from './cloudCodeChatContext.js';
 import { ICloudCodeChatMessage, ICloudCodeChatView } from './cloudCodeChat.js';
 
 /** Owns one window's conversation and coordinates the shared native transport. */
@@ -20,12 +21,17 @@ export class CloudCodeChatController extends Disposable {
 	private loadingModels = false;
 	private messages: ICloudCodeChatMessage[] = [];
 	private history: ICloudCodeMessage[] = [];
-	private activeRequest: { id: string; prompt: string; text: string } | undefined;
+	private attachments: readonly ICloudCodeAttachment[] = [];
+	private attachmentRevision = 0;
+	private loadingAttachments = false;
+	private historyHasAttachments = false;
+	private activeRequest: { id: string; prompt: string; text: string; hasAttachments: boolean } | undefined;
 	private disposed = false;
 	private cancellationOnDispose: Promise<void> = Promise.resolve();
 
 	constructor(
 		private readonly view: ICloudCodeChatView,
+		private readonly contextProvider: ICloudCodeContextProvider | undefined,
 		@ICloudCodeService private readonly service: ICloudCodeService,
 	) {
 		super();
@@ -38,6 +44,11 @@ export class CloudCodeChatController extends Disposable {
 				this.activeRequest.text += delta.text;
 				this.view.appendResponse(delta.text);
 			}
+		}));
+		this._register(view.onDidRequestAttachments(() => void this.attachContext()));
+		this._register(view.onDidRemoveAttachment(id => {
+			this.attachments = this.attachments.filter(attachment => attachment.id !== id);
+			this.view.setAttachments(this.attachments, this.loadingAttachments);
 		}));
 		this._register(view.onDidSubmit(prompt => void this.submit(prompt)));
 		this._register(view.onDidStop(() => this.stop()));
@@ -154,16 +165,58 @@ export class CloudCodeChatController extends Disposable {
 		}
 	}
 
-	private async submit(prompt: string): Promise<void> {
-		prompt = prompt.trim();
-		if (this.disposed || this.state.status !== 'signedIn' || !this.selectedModel || this.loadingModels || this.activeRequest || !prompt) {
+	private async attachContext(): Promise<void> {
+		if (!this.contextProvider || this.disposed || this.loadingAttachments || this.activeRequest || this.state.status !== 'signedIn') {
 			return;
 		}
-		const context: ICloudCodeMessage[] = [...this.history, { role: 'user', content: prompt }];
+		const revision = ++this.attachmentRevision;
+		this.loadingAttachments = true;
+		this.view.setError(undefined);
+		this.view.setAttachments(this.attachments, true);
+		try {
+			const attachments = await this.contextProvider.pickAttachments();
+			if (this.disposed || revision !== this.attachmentRevision) {
+				return;
+			}
+			this.contextProvider.assertWorkspaceTrusted();
+			this.attachments = mergeCloudCodeAttachments(this.attachments, attachments);
+		} catch (error) {
+			if (revision === this.attachmentRevision) {
+				this.showError(error);
+			}
+		} finally {
+			if (!this.disposed && revision === this.attachmentRevision) {
+				this.loadingAttachments = false;
+				this.view.setAttachments(this.attachments, false);
+			}
+		}
+	}
+
+	private async submit(prompt: string): Promise<void> {
+		prompt = prompt.trim();
+		if (this.disposed || this.state.status !== 'signedIn' || !this.selectedModel || this.loadingModels || this.loadingAttachments || this.activeRequest || !prompt) {
+			return;
+		}
+		try {
+			if (this.attachments.length || this.historyHasAttachments) {
+				this.contextProvider?.assertWorkspaceTrusted();
+			}
+		} catch (error) {
+			this.view.setDraft(prompt);
+			this.showError(error);
+			return;
+		}
+		const content = formatCloudCodePrompt(prompt, this.attachments);
+		const context: ICloudCodeMessage[] = [...this.history, { role: 'user', content }];
 		const encoder = new TextEncoder();
 		if (prompt.length > CLOUDCODE_MAX_MESSAGE_LENGTH) {
 			this.view.setDraft(prompt);
 			this.view.setError(localize('cloudcode.messageTooLong', "This message is too long. Shorten it before sending."));
+			return;
+		}
+		if (content.length > CLOUDCODE_MAX_MESSAGE_LENGTH) {
+			this.view.setDraft(prompt);
+			this.view.setError(localize('cloudcode.messageAndContextTooLong', "The message and attachments are too long. Shorten the message or remove an attachment."));
 			return;
 		}
 		if (context.length > CLOUDCODE_MAX_MESSAGES || context.some(message => message.content.length > CLOUDCODE_MAX_MESSAGE_LENGTH) || context.reduce((size, message) => size + encoder.encode(message.content).byteLength, 0) > CLOUDCODE_MAX_CONTEXT_BYTES) {
@@ -171,9 +224,11 @@ export class CloudCodeChatController extends Disposable {
 			this.view.setError(localize('cloudcode.conversationTooLong', "This conversation has reached the chat context limit. Start a New Chat and shorten long messages to continue."));
 			return;
 		}
-		const request = { id: generateUuid(), prompt, text: '' };
+		const request = { id: generateUuid(), prompt: content, text: '', hasAttachments: this.attachments.length > 0 };
 		this.activeRequest = request;
-		this.messages.push({ role: 'user', text: prompt }, { role: 'assistant', text: '' });
+		this.messages.push({ role: 'user', text: prompt, attachments: this.attachments }, { role: 'assistant', text: '' });
+		this.attachments = [];
+		this.view.setAttachments(this.attachments, false);
 		this.view.setError(undefined);
 		this.view.setMessages(this.messages);
 		this.updateStatus();
@@ -198,6 +253,7 @@ export class CloudCodeChatController extends Disposable {
 		}
 		this.messages[this.messages.length - 1] = { role: 'assistant', text: request.text, incomplete };
 		if (!incomplete) {
+			this.historyHasAttachments ||= request.hasAttachments;
 			this.history.push({ role: 'user', content: request.prompt }, { role: 'assistant', content: request.text });
 		}
 		this.activeRequest = undefined;
@@ -216,6 +272,11 @@ export class CloudCodeChatController extends Disposable {
 
 	private newConversation(): void {
 		this.stop();
+		this.attachmentRevision++;
+		this.loadingAttachments = false;
+		this.attachments = [];
+		this.historyHasAttachments = false;
+		this.view.setAttachments(this.attachments, false);
 		this.messages = [];
 		this.history = [];
 		this.view.setMessages(this.messages);
@@ -245,6 +306,7 @@ export class CloudCodeChatController extends Disposable {
 		}
 		this.disposed = true;
 		this.modelRequest++;
+		this.attachmentRevision++;
 		const request = this.activeRequest;
 		this.activeRequest = undefined;
 		if (request) {

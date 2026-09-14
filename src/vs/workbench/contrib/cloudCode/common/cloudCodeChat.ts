@@ -4,18 +4,22 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { Event } from '../../../../base/common/event.js';
+import { ICloudCodeAttachment } from './cloudCodeChatContext.js';
 import { ICloudCodeModel, ICloudCodeState } from '../../../../platform/cloudCode/common/cloudCode.js';
 
 export interface ICloudCodeChatMessage {
 	readonly role: 'user' | 'assistant';
 	readonly text: string;
 	readonly incomplete?: boolean;
+	readonly attachments?: readonly ICloudCodeAttachment[];
 }
 
 export type CloudCodeChatStatus = 'disconnected' | 'loading' | 'ready' | 'running';
 
 /** The view receives account details and text only, never authentication credentials. */
 export interface ICloudCodeChatView {
+	readonly onDidRequestAttachments: Event<void>;
+	readonly onDidRemoveAttachment: Event<string>;
 	readonly onDidSubmit: Event<string>;
 	readonly onDidStop: Event<void>;
 	readonly onDidSignIn: Event<void>;
@@ -24,6 +28,7 @@ export interface ICloudCodeChatView {
 	readonly onDidNewConversation: Event<void>;
 	readonly onDidSelectModel: Event<string>;
 	readonly onDidRetryModels: Event<void>;
+	setAttachments(attachments: readonly ICloudCodeAttachment[], loading: boolean): void;
 	setSession(state: ICloudCodeState): void;
 	setModels(models: readonly ICloudCodeModel[], selected: string | undefined, loading: boolean): void;
 	setMessages(messages: readonly ICloudCodeChatMessage[]): void;
