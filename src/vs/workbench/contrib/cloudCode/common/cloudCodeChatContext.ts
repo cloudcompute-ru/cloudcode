@@ -16,6 +16,9 @@ export interface ICloudCodeAttachment {
 	readonly id: string;
 	readonly label: string;
 	readonly content: string;
+	/** Local edit destination; never serialized into inference prompts. */
+	readonly resource?: string;
+	readonly range?: { readonly startLineNumber: number; readonly startColumn: number; readonly endLineNumber: number; readonly endColumn: number };
 	readonly languageId?: string;
 	readonly startLine?: number;
 	readonly endLine?: number;
@@ -30,7 +33,7 @@ export interface ICloudCodeContextProvider {
 export function mergeCloudCodeAttachments(current: readonly ICloudCodeAttachment[], incoming: readonly ICloudCodeAttachment[]): readonly ICloudCodeAttachment[] {
 	const merged = new Map(current.map(attachment => [attachment.id, attachment]));
 	for (const attachment of incoming) {
-		merged.set(attachment.id, { ...attachment });
+		merged.set(attachment.id, { ...attachment, ...(attachment.range ? { range: { ...attachment.range } } : {}) });
 	}
 	const attachments = [...merged.values()];
 	const encoder = new TextEncoder();

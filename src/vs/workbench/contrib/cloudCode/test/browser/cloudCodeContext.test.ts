@@ -101,7 +101,7 @@ suite('CloudCodeContext', () => {
 		const attachments = await context.readAttachments('file');
 		model.setValue('changed after attachment');
 		assert.deepStrictEqual({ attachments, reads, stats }, {
-			attachments: [{ id: resource.toString(), label: 'src/example.ts', content: 'unsaved content', languageId: 'typescript' }],
+			attachments: [{ id: resource.toString(), resource: resource.toString(), label: 'src/example.ts', content: 'unsaved content', languageId: 'typescript' }],
 			reads: [],
 			stats: [],
 		});
@@ -111,7 +111,8 @@ suite('CloudCodeContext', () => {
 		openModel(`first\nselected\n${'x'.repeat(CLOUDCODE_MAX_ATTACHMENT_BYTES)}`);
 		selection = new Selection(2, 1, 3, 1);
 		assert.deepStrictEqual(await context.readAttachments('selection'), [{
-			id: `${resource.toString()}#2:1-3:1`, label: 'src/example.ts:2-2', content: 'selected\n', languageId: 'typescript', startLine: 2, endLine: 2,
+			id: `${resource.toString()}#2:1-3:1`, resource: resource.toString(), label: 'src/example.ts:2-2', content: 'selected\n', languageId: 'typescript', startLine: 2, endLine: 2,
+			range: { startLineNumber: 2, startColumn: 1, endLineNumber: 3, endColumn: 1 },
 		}]);
 	});
 
@@ -141,7 +142,7 @@ suite('CloudCodeContext', () => {
 		const external = URI.file('/outside/private/folder/notes.txt');
 		pickedFiles = [external, external];
 		assert.deepStrictEqual({ attachments: await context.readAttachments('files'), reads }, {
-			attachments: [{ id: external.toString(), label: 'notes.txt', content: diskContent }],
+			attachments: [{ id: external.toString(), resource: external.toString(), label: 'notes.txt', content: diskContent }],
 			reads: [{ resource: external, options: { acceptTextOnly: true, limits: { size: CLOUDCODE_MAX_ATTACHMENT_BYTES } } }],
 		});
 	});
