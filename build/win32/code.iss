@@ -8,10 +8,10 @@
 AppId={#AppId}
 AppName={#NameLong}
 AppVerName={#NameVersion}
-AppPublisher=Microsoft Corporation
-AppPublisherURL=https://code.visualstudio.com/
-AppSupportURL=https://code.visualstudio.com/
-AppUpdatesURL=https://code.visualstudio.com/
+AppPublisher=CloudCompute
+AppPublisherURL=https://cloudcompute.ru/
+AppSupportURL=https://github.com/cloudcompute-ru/cloudcode
+AppUpdatesURL=https://cloudcompute.ru/ide
 DefaultGroupName={#NameLong}
 AllowNoIcons=yes
 OutputDir={#OutputDir}
