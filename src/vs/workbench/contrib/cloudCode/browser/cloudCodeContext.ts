@@ -125,7 +125,7 @@ export class CloudCodeContext {
 			return this.snapshotModel(currentModel);
 		}
 		this.assertContent(content, resource);
-		return { id: resource.toString(), label: this.resourceLabel(resource), content };
+		return { id: resource.toString(), resource: resource.toString(), label: this.resourceLabel(resource), content };
 	}
 
 	private snapshotModel(model: ITextModel, range?: IRange): ICloudCodeAttachment {
@@ -140,6 +140,8 @@ export class CloudCodeContext {
 			id: range ? `${model.uri.toString()}#${range.startLineNumber}:${range.startColumn}-${range.endLineNumber}:${range.endColumn}` : model.uri.toString(),
 			label: range ? localize('cloudCode.context.selectionLabel', "{0}:{1}-{2}", label, range.startLineNumber, endLine) : label,
 			content,
+			resource: model.uri.toString(),
+			...(range ? { range: { startLineNumber: range.startLineNumber, startColumn: range.startColumn, endLineNumber: range.endLineNumber, endColumn: range.endColumn } } : {}),
 			languageId: model.getLanguageId(),
 			...(range ? { startLine: range.startLineNumber, endLine } : {}),
 		};

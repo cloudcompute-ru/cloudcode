@@ -14,6 +14,7 @@ import { ICloudCodeModel, ICloudCodeState } from '../../../../platform/cloudCode
 import { defaultButtonStyles, defaultProgressBarStyles } from '../../../../platform/theme/browser/defaultStyles.js';
 import { ICloudCodeAttachment } from '../common/cloudCodeChatContext.js';
 import { CloudCodeChatStatus, ICloudCodeChatMessage, ICloudCodeChatView } from '../common/cloudCodeChat.js';
+import { CloudCodeChatMode, ICloudCodeEditProposal } from '../common/cloudCodeEdits.js';
 
 /** Presentation only; browser sign-in and inference run through the controller. */
 export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatView {
@@ -39,6 +40,15 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 	private readonly accountButton: Button;
 	private readonly modelPicker: HTMLElement;
 	private readonly modelButton: Button;
+	private readonly modeButton: Button;
+	private mode: CloudCodeChatMode = 'ask';
+	private readonly proposalsNode: HTMLElement;
+	private readonly proposalHint: HTMLElement;
+	private readonly proposalList: HTMLElement;
+	private readonly proposalDisposables = this._register(new DisposableStore());
+	private proposals: readonly ICloudCodeEditProposal[] = [];
+	private proposalButtons: { proposal: ICloudCodeEditProposal; preview: Button; accept: Button; reject: Button }[] = [];
+	private editingBusy = false;
 	private models: readonly ICloudCodeModel[] = [];
 	private selectedModel: string | undefined;
 	private readonly retryModelsButton: Button;
@@ -48,6 +58,10 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 	private loadingModels = false;
 	private status: CloudCodeChatStatus = 'disconnected';
 
+	private readonly changeModeEmitter = this._register(new Emitter<CloudCodeChatMode>());
+	readonly onDidChangeMode = this.changeModeEmitter.event;
+	private readonly reviewEditEmitter = this._register(new Emitter<{ id: string; action: 'preview' | 'accept' | 'reject' }>());
+	readonly onDidReviewEdit = this.reviewEditEmitter.event;
 	private readonly requestAttachmentsEmitter = this._register(new Emitter<void>());
 	readonly onDidRequestAttachments = this.requestAttachmentsEmitter.event;
 	private readonly removeAttachmentEmitter = this._register(new Emitter<string>());
@@ -94,6 +108,15 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 			'aria-relevant': 'additions text'
 		}));
 
+		this.proposalsNode = dom.append(this.conversation, dom.$('.cloudcode-chat-proposals', {
+			role: 'region',
+			'aria-label': localize('cloudcode.proposedChanges', "Proposed Changes")
+		}));
+		this.proposalsNode.hidden = true;
+		dom.append(this.proposalsNode, dom.$('h3')).textContent = localize('cloudcode.proposedChanges', "Proposed Changes");
+		this.proposalHint = dom.append(this.proposalsNode, dom.$('p.cloudcode-chat-hint', { role: 'status', 'aria-live': 'polite' }));
+		this.proposalList = dom.append(this.proposalsNode, dom.$('.cloudcode-chat-proposal-list', { role: 'list' }));
+
 		const composer = dom.append(this.domNode, dom.$('.cloudcode-chat-composer'));
 		this.errorLabel = dom.append(composer, dom.$('p.cloudcode-chat-error', { role: 'alert' }));
 		this.errorLabel.hidden = true;
@@ -118,6 +141,14 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 
 		const footer = dom.append(composer, dom.$('.cloudcode-chat-footer'));
 		this.modelPicker = dom.append(footer, dom.$('.cloudcode-chat-model-picker'));
+		this.modeButton = this._register(new Button(this.modelPicker, { ...defaultButtonStyles, secondary: true }));
+		this.modeButton.element.classList.add('cloudcode-chat-mode');
+		this.modeButton.element.setAttribute('aria-label', localize('cloudcode.editModeToggle', "Propose Edits mode"));
+		this._register(this.modeButton.onDidClick(() => {
+			if (this.modeButton.enabled) {
+				this.changeModeEmitter.fire(this.mode === 'ask' ? 'edit' : 'ask');
+			}
+		}));
 		this.modelButton = this._register(new Button(this.modelPicker, { ...defaultButtonStyles, secondary: true }));
 		this.modelButton.element.classList.add('cloudcode-chat-model');
 		this.retryModelsButton = this._register(new Button(this.modelPicker, { ...defaultButtonStyles, secondary: true }));
@@ -158,16 +189,102 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 		this._register(this.modelButton.onDidClick(async () => {
 			const models = this.models;
 			const selected = await this.pickModel(models, this.selectedModel);
-			if (!this._store.isDisposed && selected && models === this.models && this.state.status === 'signedIn' && this.status !== 'running' && this.models.some(model => model.id === selected)) {
+			if (!this._store.isDisposed && selected && models === this.models && this.state.status === 'signedIn' && this.status !== 'running' && !this.editingBusy && !this.hasPendingProposals && this.models.some(model => model.id === selected)) {
 				this.selectedModel = selected;
 				this.updateModelLabel();
 				this.selectModelEmitter.fire(selected);
 			}
 		}));
+		this.setEditMode('ask');
 		this.setAttachments([], false);
 		this.setSession(this.state);
 		this.setModels([], undefined, false);
 		this.setStatus('disconnected');
+	}
+
+	setEditMode(mode: CloudCodeChatMode): void {
+		this.mode = mode;
+		this.modeButton.label = mode === 'edit'
+			? localize('cloudcode.proposeEdits', "Propose Edits")
+			: localize('cloudcode.askMode', "Ask");
+		this.modeButton.element.setAttribute('aria-pressed', String(mode === 'edit'));
+		this.prompt.placeholder = mode === 'edit'
+			? localize('cloudcode.editPromptPlaceholder', "Describe changes to attached files…")
+			: localize('cloudcode.promptPlaceholder', "Ask CloudCode…");
+		this.updateControls();
+	}
+
+	/** Keeps source in the native diff editor; this list shows review actions and outcomes. */
+	setEditProposals(proposals: readonly ICloudCodeEditProposal[], busy: boolean): void {
+		const wasAtBottom = this.conversation.scrollHeight - this.conversation.scrollTop - this.conversation.clientHeight < 20;
+		this.editingBusy = busy;
+		this.proposalsNode.hidden = proposals.length === 0;
+		this.proposalsNode.setAttribute('aria-busy', String(busy));
+		const changed = proposals !== this.proposals;
+		this.proposals = proposals;
+		this.proposalHint.textContent = busy
+			? localize('cloudcode.reviewBusy', "Working on this change…")
+			: this.hasPendingProposals
+				? localize('cloudcode.reviewHint', "Preview each diff, then accept or reject it before sending another message.")
+				: localize('cloudcode.reviewComplete', "Review complete. Accepted changes can be undone in the editor.");
+		if (changed) {
+			const active = this.proposalsNode.ownerDocument.activeElement;
+			const hadFocus = !!active && this.proposalsNode.contains(active);
+			const focusedId = hadFocus ? active?.getAttribute('data-proposal-id') : undefined;
+			this.proposalDisposables.clear();
+			this.proposalButtons = [];
+			dom.clearNode(this.proposalList);
+			for (const proposal of proposals) {
+				const label = proposal.target.attachment.label;
+				const row = dom.append(this.proposalList, dom.$('.cloudcode-chat-proposal', { role: 'listitem' }));
+				dom.append(row, dom.$('h4')).textContent = label;
+				if (proposal.status !== 'pending') {
+					dom.append(row, dom.$('p.cloudcode-chat-hint')).textContent = proposal.status === 'accepted'
+						? localize('cloudcode.editAccepted', "Accepted")
+						: localize('cloudcode.editRejected', "Rejected");
+					continue;
+				}
+				if (proposal.error) {
+					dom.append(row, dom.$('p.cloudcode-chat-error', { role: 'alert' })).textContent = proposal.error;
+				}
+				const actions = dom.append(row, dom.$('.cloudcode-chat-proposal-actions'));
+				const preview = this.createProposalButton(actions, proposal.id, 'preview', localize('cloudcode.previewDiff', "Preview Diff"), localize('cloudcode.previewNamedDiff', "Preview diff for {0}", label));
+				const accept = this.createProposalButton(actions, proposal.id, 'accept', localize('cloudcode.acceptEdit', "Accept"), localize('cloudcode.acceptNamedEdit', "Accept changes to {0}", label));
+				const reject = this.createProposalButton(actions, proposal.id, 'reject', localize('cloudcode.rejectEdit', "Reject"), localize('cloudcode.rejectNamedEdit', "Reject changes to {0}", label));
+				this.proposalButtons.push({ proposal, preview, accept, reject });
+			}
+			this.updateControls();
+			if (hadFocus && !busy) {
+				const next = this.proposalButtons.find(buttons => buttons.proposal.id === focusedId) ?? this.proposalButtons[0];
+				if (next?.preview.enabled) {
+					next.preview.focus();
+				} else {
+					this.conversation.focus();
+				}
+			}
+		} else {
+			this.updateControls();
+		}
+		if (wasAtBottom) {
+			this.conversation.scrollTop = this.conversation.scrollHeight;
+		}
+	}
+
+	private createProposalButton(parent: HTMLElement, id: string, action: 'preview' | 'accept' | 'reject', label: string, ariaLabel: string): Button {
+		const button = this.proposalDisposables.add(new Button(parent, { ...defaultButtonStyles, secondary: true }));
+		button.label = label;
+		button.element.setAttribute('aria-label', ariaLabel);
+		button.element.setAttribute('data-proposal-id', id);
+		this.proposalDisposables.add(button.onDidClick(() => {
+			if (button.enabled) {
+				this.reviewEditEmitter.fire({ id, action });
+			}
+		}));
+		return button;
+	}
+
+	private get hasPendingProposals(): boolean {
+		return this.proposals.some(proposal => proposal.status === 'pending');
 	}
 
 	setAttachments(attachments: readonly ICloudCodeAttachment[], loading: boolean): void {
@@ -304,11 +421,18 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 	}
 
 	private updateControls(): void {
-		this.sendButton.enabled = !this.loadingAttachments && this.status === 'ready' && this.prompt.value.trim().length > 0;
-		this.attachButton.enabled = this.state.status === 'signedIn' && this.status !== 'running' && !this.loadingAttachments;
+		const canInteract = this.state.status === 'signedIn' && this.status !== 'running' && !this.editingBusy;
+		this.sendButton.enabled = canInteract && !this.loadingAttachments && !this.hasPendingProposals && this.status === 'ready' && this.prompt.value.trim().length > 0;
+		this.attachButton.enabled = canInteract && !this.loadingAttachments && !this.hasPendingProposals;
+		this.modeButton.enabled = canInteract && !this.loadingAttachments && !this.hasPendingProposals;
 		this.stopButton.enabled = this.status === 'running';
-		this.modelButton.enabled = this.state.status === 'signedIn' && !this.loadingModels && this.status !== 'running' && this.models.length > 0;
+		this.modelButton.enabled = canInteract && !this.hasPendingProposals && !this.loadingModels && this.models.length > 0;
 		this.stopButton.element.hidden = this.status !== 'running';
+		for (const { proposal, preview, accept, reject } of this.proposalButtons) {
+			preview.enabled = canInteract;
+			accept.enabled = canInteract && proposal.reviewed;
+			reject.enabled = canInteract;
+		}
 	}
 
 	newConversation(): void {
@@ -325,7 +449,7 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 
 	private submit(): void {
 		const prompt = this.prompt.value.trim();
-		if (this.status !== 'ready' || this.loadingAttachments || !prompt) {
+		if (this.state.status !== 'signedIn' || this.status !== 'ready' || this.loadingAttachments || this.editingBusy || this.hasPendingProposals || !prompt) {
 			return;
 		}
 		this.prompt.value = '';

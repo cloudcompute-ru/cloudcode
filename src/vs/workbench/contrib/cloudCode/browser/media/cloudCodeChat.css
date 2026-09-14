@@ -35,13 +35,14 @@
 
 .cloudcode-chat .cloudcode-chat-model-picker {
 	display: flex;
-	flex: 1;
+	flex: 1 1 14em;
 	min-width: 0;
 	align-items: center;
 	gap: var(--vscode-spacing-size80);
 }
 
 .cloudcode-chat .cloudcode-chat-model {
+	flex: 1;
 	min-width: 0;
 	max-width: 100%;
 	overflow: hidden;
@@ -261,6 +262,48 @@
 
 .cloudcode-chat .cloudcode-chat-attachment > .monaco-button {
 	flex-shrink: 0;
+}
+
+.cloudcode-chat .cloudcode-chat-mode {
+	flex-shrink: 0;
+	white-space: nowrap;
+}
+
+.cloudcode-chat .cloudcode-chat-proposals {
+	margin-top: var(--vscode-spacing-size160);
+}
+
+.cloudcode-chat .cloudcode-chat-proposals h3 {
+	margin: 0;
+	font-size: var(--vscode-fontSize-heading3);
+	font-weight: var(--vscode-fontWeight-semiBold);
+}
+
+.cloudcode-chat .cloudcode-chat-proposal-list {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size80);
+	margin-top: var(--vscode-spacing-size120);
+}
+
+.cloudcode-chat .cloudcode-chat-proposal {
+	min-width: 0;
+	padding: var(--vscode-spacing-size120);
+	border: var(--vscode-strokeThickness) solid var(--vscode-widget-border, transparent);
+	border-radius: var(--vscode-cornerRadius-medium);
+}
+
+.cloudcode-chat .cloudcode-chat-proposal h4 {
+	margin: 0 0 var(--vscode-spacing-size80);
+	font-size: var(--vscode-fontSize-body1);
+	font-weight: var(--vscode-fontWeight-semiBold);
+	overflow-wrap: anywhere;
+}
+
+.cloudcode-chat .cloudcode-chat-proposal-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--vscode-spacing-size80);
 }
 
 .cloudcode-chat [hidden] {

@@ -12,8 +12,13 @@ import { CLOUDCODE_MAX_MESSAGE_LENGTH, ICloudCodeChatDelta, ICloudCodeMessage, I
 import { CloudCodeChatStatus, ICloudCodeChatMessage, ICloudCodeChatView } from '../../common/cloudCodeChat.js';
 import { CloudCodeChatController } from '../../common/cloudCodeChatController.js';
 import { formatCloudCodePrompt, ICloudCodeAttachment, ICloudCodeContextProvider } from '../../common/cloudCodeChatContext.js';
+import { CloudCodeChatMode, ICloudCodeEditProposal, ICloudCodeEditProvider, ICloudCodeEditTarget, ICloudCodeProposedEdit } from '../../common/cloudCodeEdits.js';
 
 class TestView extends Disposable implements ICloudCodeChatView {
+	readonly changeMode = this._register(new Emitter<CloudCodeChatMode>());
+	readonly onDidChangeMode = this.changeMode.event;
+	readonly reviewEdit = this._register(new Emitter<{ id: string; action: 'preview' | 'accept' | 'reject' }>());
+	readonly onDidReviewEdit = this.reviewEdit.event;
 	readonly requestAttachments = this._register(new Emitter<void>());
 	readonly onDidRequestAttachments = this.requestAttachments.event;
 	readonly removeAttachment = this._register(new Emitter<string>());
@@ -42,6 +47,14 @@ class TestView extends Disposable implements ICloudCodeChatView {
 	draft = '';
 	attachments: readonly ICloudCodeAttachment[] = [];
 	loadingAttachments = false;
+	mode: CloudCodeChatMode = 'ask';
+	proposals: readonly ICloudCodeEditProposal[] = [];
+	busyEdits = false;
+	setEditMode(mode: CloudCodeChatMode): void { this.mode = mode; }
+	setEditProposals(proposals: readonly ICloudCodeEditProposal[], busy: boolean): void {
+		this.proposals = proposals;
+		this.busyEdits = busy;
+	}
 	setAttachments(attachments: readonly ICloudCodeAttachment[], loading: boolean): void {
 		this.attachments = attachments;
 		this.loadingAttachments = loading;
@@ -67,6 +80,29 @@ class TestContextProvider implements ICloudCodeContextProvider {
 			throw new Error('Workspace is not trusted');
 		}
 	}
+}
+
+class TestEditProvider implements ICloudCodeEditProvider {
+	prepareResult: Promise<readonly ICloudCodeEditTarget[]> | undefined;
+	previewResult: Promise<void> = Promise.resolve();
+	applyResult: Promise<void> = Promise.resolve();
+	readonly prepared: (readonly ICloudCodeAttachment[])[] = [];
+	readonly previews: ICloudCodeProposedEdit[] = [];
+	readonly applications: ICloudCodeProposedEdit[] = [];
+	clearCount = 0;
+	async prepare(attachments: readonly ICloudCodeAttachment[]): Promise<readonly ICloudCodeEditTarget[]> {
+		this.prepared.push(attachments);
+		return this.prepareResult ?? attachments.map((attachment, index) => ({ token: String(index + 1), attachment }));
+	}
+	async preview(edit: ICloudCodeProposedEdit): Promise<void> {
+		this.previews.push(edit);
+		await this.previewResult;
+	}
+	async apply(edit: ICloudCodeProposedEdit): Promise<void> {
+		this.applications.push(edit);
+		await this.applyResult;
+	}
+	clear(): void { this.clearCount++; }
 }
 
 const signedIn: ICloudCodeState = {
@@ -108,12 +144,14 @@ suite('CloudCodeChatController', () => {
 	let view: TestView;
 	let controller: CloudCodeChatController;
 	let contextProvider: TestContextProvider;
+	let editProvider: TestEditProvider;
 
 	setup(async () => {
 		service = disposables.add(new TestService());
 		view = disposables.add(new TestView());
 		contextProvider = new TestContextProvider();
-		controller = disposables.add(new CloudCodeChatController(view, contextProvider, service));
+		editProvider = new TestEditProvider();
+		controller = disposables.add(new CloudCodeChatController(view, contextProvider, editProvider, service));
 		await controller.initialize();
 	});
 
@@ -123,6 +161,27 @@ suite('CloudCodeChatController', () => {
 		view.requestAttachments.fire();
 		await result.complete(attachments);
 		await Promise.resolve();
+	}
+
+	const editableAttachment: ICloudCodeAttachment = {
+		id: 'file:///project/main.ts', resource: 'file:///project/main.ts', label: 'main.ts', content: 'const version = 1;', languageId: 'typescript'
+	};
+
+	async function settleEdits(): Promise<void> {
+		await Promise.resolve();
+		await Promise.resolve();
+		await Promise.resolve();
+	}
+
+	async function generateEdits(response: string = JSON.stringify({ edits: [{ attachment: 1, replacement: 'const version = 2;' }] })): Promise<void> {
+		view.changeMode.fire('edit');
+		await attach([editableAttachment]);
+		view.submit.fire('Update the version');
+		await settleEdits();
+		const request = service.requests.at(-1)!;
+		service.deltas.fire({ requestId: request.id, text: response });
+		await request.result.complete({ cancelled: false });
+		await settleEdits();
 	}
 
 	test('streams only matching request deltas and carries completed turns forward', async () => {
@@ -369,4 +428,178 @@ suite('CloudCodeChatController', () => {
 		view.submit.fire('Question without project context');
 		assert.deepStrictEqual(service.requests[1].messages, [{ role: 'user', content: 'Question without project context' }]);
 	});
+	test('Ask mode never turns an edit-shaped response into a file change', async () => {
+		await attach([editableAttachment]);
+		view.submit.fire('Explain this code');
+		const request = service.requests[0];
+		const response = JSON.stringify({ edits: [{ attachment: 1, replacement: 'unrequested' }] });
+		service.deltas.fire({ requestId: request.id, text: response });
+		await request.result.complete({ cancelled: false });
+		assert.deepStrictEqual({ mode: view.mode, proposals: view.proposals, prepared: editProvider.prepared, applications: editProvider.applications }, {
+			mode: 'ask', proposals: [], prepared: [], applications: []
+		});
+	});
+
+	test('Edit mode requires explicit attachments and preserves the unsent question', async () => {
+		view.changeMode.fire('edit');
+		view.submit.fire('Update the version');
+		await settleEdits();
+		assert.deepStrictEqual({ requests: service.requests.length, draft: view.draft, prepared: editProvider.prepared, proposals: view.proposals }, {
+			requests: 0, draft: 'Update the version', prepared: [], proposals: []
+		});
+		assert.ok(view.error);
+	});
+
+	test('generated edits require a completed diff preview before acceptance', async () => {
+		await generateEdits();
+		const proposal = view.proposals[0];
+		assert.deepStrictEqual({ status: proposal.status, reviewed: proposal.reviewed, applications: editProvider.applications }, {
+			status: 'pending', reviewed: false, applications: []
+		});
+		view.reviewEdit.fire({ id: proposal.id, action: 'accept' });
+		await settleEdits();
+		assert.strictEqual(editProvider.applications.length, 0);
+		view.reviewEdit.fire({ id: proposal.id, action: 'preview' });
+		await settleEdits();
+		view.reviewEdit.fire({ id: proposal.id, action: 'accept' });
+		await settleEdits();
+		assert.deepStrictEqual({ previews: editProvider.previews.length, applications: editProvider.applications.map(edit => edit.replacement), status: view.proposals[0].status }, {
+			previews: 1, applications: ['const version = 2;'], status: 'accepted'
+		});
+	});
+
+	test('rejecting an edit never applies it and allows another message', async () => {
+		await generateEdits();
+		view.submit.fire('Must wait for review');
+		assert.strictEqual(service.requests.length, 1);
+		view.reviewEdit.fire({ id: view.proposals[0].id, action: 'reject' });
+		await settleEdits();
+		view.changeMode.fire('ask');
+		view.submit.fire('Continue the discussion');
+		assert.deepStrictEqual({ applications: editProvider.applications, requests: service.requests.length }, { applications: [], requests: 2 });
+	});
+
+	test('failed acceptance keeps the proposal pending and preserves the error', async () => {
+		await generateEdits();
+		const id = view.proposals[0].id;
+		view.reviewEdit.fire({ id, action: 'preview' });
+		await settleEdits();
+		const result = new DeferredPromise<void>();
+		editProvider.applyResult = result.p;
+		view.reviewEdit.fire({ id, action: 'accept' });
+		await result.error(new Error('The file changed after attachment'));
+		await settleEdits();
+		assert.deepStrictEqual({ status: view.proposals[0].status, error: view.proposals[0].error, busy: view.busyEdits, applications: editProvider.applications.length }, {
+			status: 'pending', error: 'The file changed after attachment', busy: false, applications: 1
+		});
+	});
+
+	test('an unfinished or failed preview cannot authorize applying an edit', async () => {
+		await generateEdits();
+		const id = view.proposals[0].id;
+		const result = new DeferredPromise<void>();
+		editProvider.previewResult = result.p;
+		view.reviewEdit.fire({ id, action: 'preview' });
+		view.reviewEdit.fire({ id, action: 'accept' });
+		await result.error(new Error('Preview is unavailable'));
+		await settleEdits();
+		view.reviewEdit.fire({ id, action: 'accept' });
+		await settleEdits();
+		assert.deepStrictEqual({ reviewed: view.proposals[0].reviewed, applications: editProvider.applications, status: view.proposals[0].status }, {
+			reviewed: false, applications: [], status: 'pending'
+		});
+	});
+
+	test('edit preparation blocks duplicate submissions and preserves snapshots on failure', async () => {
+		view.changeMode.fire('edit');
+		await attach([editableAttachment]);
+		const result = new DeferredPromise<readonly ICloudCodeEditTarget[]>();
+		editProvider.prepareResult = result.p;
+		view.submit.fire('Update the version');
+		view.submit.fire('Duplicate');
+		assert.deepStrictEqual({ requests: service.requests.length, preparations: editProvider.prepared.length }, { requests: 0, preparations: 1 });
+		await result.error(new Error('The attachment is stale'));
+		await settleEdits();
+		assert.deepStrictEqual({ requests: service.requests.length, draft: view.draft, attachments: view.attachments, busy: view.busyEdits }, {
+			requests: 0, draft: 'Update the version', attachments: [editableAttachment], busy: false
+		});
+	});
+
+	for (const reset of ['newChat', 'accountChange', 'signOut', 'dispose'] as const) {
+		test(reset + ' ignores edit preparation from an earlier conversation', async () => {
+			view.changeMode.fire('edit');
+			await attach([editableAttachment]);
+			const result = new DeferredPromise<readonly ICloudCodeEditTarget[]>();
+			editProvider.prepareResult = result.p;
+			view.submit.fire('Update the version');
+			switch (reset) {
+				case 'newChat': view.newConversation.fire(); break;
+				case 'accountChange': service.stateEmitter.fire({ ...signedIn, account: { ...signedIn.account!, team: { id: 2, name: 'Other team' } } }); break;
+				case 'signOut': view.signOut.fire(); break;
+				case 'dispose': controller.dispose(); break;
+			}
+			await result.complete([{ token: '1', attachment: editableAttachment }]);
+			await settleEdits();
+			assert.deepStrictEqual({ requests: service.requests.length, proposals: view.proposals, applications: editProvider.applications }, {
+				requests: 0, proposals: [], applications: []
+			});
+			if (reset === 'newChat') {
+				assert.strictEqual(view.status, 'ready');
+			}
+		});
+	}
+
+	for (const outcome of ['cancelled', 'failed', 'malformed'] as const) {
+		test(outcome + ' edit generation creates no actionable changes', async () => {
+			view.changeMode.fire('edit');
+			await attach([editableAttachment]);
+			view.submit.fire('Update the version');
+			await settleEdits();
+			const request = service.requests[0];
+			service.deltas.fire({ requestId: request.id, text: outcome === 'malformed' ? 'I will change the file.' : JSON.stringify({ edits: [{ attachment: 1, replacement: 'const version = 2;' }] }) });
+			if (outcome === 'failed') {
+				await request.result.error(new Error('Connection lost'));
+			} else {
+				if (outcome === 'cancelled') {
+					view.stop.fire();
+				}
+				await request.result.complete({ cancelled: outcome === 'cancelled' });
+			}
+			await settleEdits();
+			assert.deepStrictEqual({ proposals: view.proposals, applications: editProvider.applications }, { proposals: [], applications: [] });
+		});
+	}
+
+	test('New Chat ignores a late diff preview and invalidates its review controls', async () => {
+		await generateEdits();
+		const id = view.proposals[0].id;
+		const result = new DeferredPromise<void>();
+		editProvider.previewResult = result.p;
+		view.reviewEdit.fire({ id, action: 'preview' });
+		view.newConversation.fire();
+		await result.complete();
+		await settleEdits();
+		view.reviewEdit.fire({ id, action: 'accept' });
+		await settleEdits();
+		assert.deepStrictEqual({ proposals: view.proposals, applications: editProvider.applications }, { proposals: [], applications: [] });
+	});
+
+	test('accepted edits clear obsolete source history and edit requests use only fresh targets', async () => {
+		await attach([editableAttachment]);
+		view.submit.fire('Explain the current version');
+		const first = service.requests[0];
+		service.deltas.fire({ requestId: first.id, text: 'The version is one.' });
+		await first.result.complete({ cancelled: false });
+		await generateEdits();
+		assert.strictEqual(service.requests[1].messages.length, 1);
+		const id = view.proposals[0].id;
+		view.reviewEdit.fire({ id, action: 'preview' });
+		await settleEdits();
+		view.reviewEdit.fire({ id, action: 'accept' });
+		await settleEdits();
+		view.changeMode.fire('ask');
+		view.submit.fire('Start a fresh discussion');
+		assert.deepStrictEqual(service.requests[2].messages, [{ role: 'user', content: 'Start a fresh discussion' }]);
+	});
+
 });

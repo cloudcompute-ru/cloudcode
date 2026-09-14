@@ -1,6 +1,6 @@
 # CloudCode development and sign-in
 
-CloudCode opens CloudCompute's existing browser login, requests consent for the selected team, and streams chat responses in **View → CloudCode Chat**. Users do not copy API keys or client secrets into the editor. Chat supports explicitly attached text files and selections. It does not explore the project automatically or run agent tools.
+CloudCode opens CloudCompute's existing browser login, requests consent for the selected team, and streams chat responses in **View → CloudCode Chat**. Users do not copy API keys or client secrets into the editor. Chat supports explicitly attached text files and selections, plus proposed edits with native diff review and Accept/Reject controls. It does not explore the project automatically or run agent tools.
 
 ## Backend setup
 
@@ -62,6 +62,21 @@ Limits are five files/selections per message, 16 KiB per attachment and 24 KiB t
 
 Local and remote text files are supported. Active untitled text buffers can also be attached. Labels use workspace-relative paths (with the folder name in multi-root workspaces); explicitly chosen files outside the workspace use their basename. Machine-specific URI identifiers are never included in inference content.
 
+## Propose and review code changes
+
+1. Attach the file or selected code you want to change. Use one attachment per file for an edit request.
+2. Switch **Ask** to **Propose Edits** beside the model selector, describe the change and send.
+3. Choose **Preview Diff** for a proposed change. The native diff shows the captured file and the proposed result, including surrounding code for a selection.
+4. Choose **Accept** or **Reject** for each file. Accept becomes available after its diff opens successfully. Resolve the proposed changes before sending another request.
+
+The model can replace only the attached files or selections. It cannot choose an arbitrary path, create/delete files, run commands or apply changes automatically. Invalid, oversized, stopped or failed responses never produce actionable edits.
+
+Accept applies an ordinary undoable editor change. It does not call Save; normal editor autosave settings still apply. CloudCode checks the full captured file before accepting, including unsaved changes. If that file has changed, trust was revoked, or the file is read-only, the change is refused. Reject it and attach fresh code to request another proposal. New Chat and account changes invalidate pending proposals and any in-flight review.
+
+Edit requests use the current instruction and newly attached snapshots, independently of earlier chat. After accepting edits, subsequent requests start with fresh model context so old source snapshots are not reused. The transcript remains visible; attach updated code for follow-up edits. Proposals and their previews are kept in memory for the current session.
+
+Replacements are limited to 32 KiB each and 48 KiB combined; the full structured response is limited to 64 KiB. Existing input/context limits still apply. Selection edits also require the complete source file to fit within a 1 MiB local snapshot; only the selected text is sent to inference.
+
 ## Focused checks
 
 After compiling, run the relevant unit suites without calling a live account or inference provider:
@@ -71,6 +86,7 @@ npm run test-node -- --run src/vs/platform/cloudCode/test/node/cloudCodeProtocol
 npm run test-node -- --run src/vs/platform/cloudCode/test/node/cloudCodeService.test.ts
 npm run test-node -- --run src/vs/workbench/contrib/cloudCode/test/common/cloudCodeChatController.test.ts
 npm run test-node -- --run src/vs/workbench/contrib/cloudCode/test/common/cloudCodeChatContext.test.ts
+npm run test-node -- --run src/vs/workbench/contrib/cloudCode/test/common/cloudCodeEdits.test.ts
 ```
 
 The existing component explorer exposes the `cloudCode/` fixtures for signed-out, browser sign-in, model loading, conversation, streaming, error, and stopped states in light and dark themes. Full sign-in verification requires the deployed backend client configured above.
