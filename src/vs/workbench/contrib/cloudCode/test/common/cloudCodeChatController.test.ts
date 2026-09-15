@@ -21,7 +21,7 @@ class TestView extends Disposable implements ICloudCodeChatView {
 	readonly onDidChangeMode = this.changeMode.event;
 	readonly reviewEdit = this._register(new Emitter<{ id: string; action: 'preview' | 'accept' | 'reject' }>());
 	readonly onDidReviewEdit = this.reviewEdit.event;
-	readonly requestAttachments = this._register(new Emitter<void>());
+	readonly requestAttachments = this._register(new Emitter<void | (() => Promise<readonly ICloudCodeAttachment[]>)>());
 	readonly onDidRequestAttachments = this.requestAttachments.event;
 	readonly removeAttachment = this._register(new Emitter<string>());
 	readonly onDidRemoveAttachment = this.removeAttachment.event;
@@ -203,6 +203,40 @@ suite('CloudCodeChatController', () => {
 		await request.result.complete({ cancelled: false });
 		await settleEdits();
 	}
+
+	test('pasted images are retained in follow-up requests and cleared by New Chat', async () => {
+		const attachment = { id: 'screenshot', label: 'Screenshot.png', content: '', image: { dataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aM1sAAAAASUVORK5CYII=' } };
+		view.requestAttachments.fire(async () => [attachment]);
+		await settleEdits();
+		view.submit.fire('Explain this');
+		const first = service.requests[0];
+		service.deltas.fire({ requestId: first.id, text: 'An image' });
+		await first.result.complete({ cancelled: false });
+		view.submit.fire('More details');
+		assert.deepStrictEqual(service.requests[1].messages[0].images, [attachment.image]);
+		view.newConversation.fire();
+		view.submit.fire('Hello');
+		assert.deepStrictEqual(service.requests[2].messages, [{ role: 'user', content: 'Hello' }]);
+	});
+
+	test('New Chat discards an in-flight drop before it can attach to the new draft', async () => {
+		const pending = new DeferredPromise<readonly ICloudCodeAttachment[]>();
+		view.requestAttachments.fire(() => pending.p);
+		view.newConversation.fire();
+		await pending.complete([editableAttachment]);
+		await settleEdits();
+		assert.deepStrictEqual({ attachments: view.attachments, loading: view.loadingAttachments }, { attachments: [], loading: false });
+	});
+
+	test('edit mode sends images as references but only prepares text targets', async () => {
+		const image = { id: 'image', label: 'Screenshot.png', content: '', image: { dataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aM1sAAAAASUVORK5CYII=' } };
+		await attach([image, editableAttachment]);
+		view.changeMode.fire('edit');
+		view.submit.fire('Match the screenshot');
+		await settleEdits();
+		assert.deepStrictEqual(editProvider.prepared, [[editableAttachment]]);
+		assert.deepStrictEqual(service.requests[0].messages[0].images, [image.image]);
+	});
 
 	test('streams only matching request deltas and carries completed turns forward', async () => {
 		view.submit.fire('First question');

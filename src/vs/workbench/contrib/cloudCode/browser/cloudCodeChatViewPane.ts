@@ -19,6 +19,7 @@ import { IViewPaneOptions, ViewPane } from '../../../browser/parts/views/viewPan
 import { IViewDescriptorService } from '../../../common/views.js';
 import { ILifecycleService } from '../../../services/lifecycle/common/lifecycle.js';
 import { CloudCodeChatWidget } from './cloudCodeChatWidget.js';
+import { CloudCodeAttachmentInput } from './cloudCodeAttachmentInput.js';
 import { CloudCodeContext } from './cloudCodeContext.js';
 import { CloudCodeEditWorkspace } from './cloudCodeEditWorkspace.js';
 import { CloudCodeAgentWorkspace } from './cloudCodeAgentWorkspace.js';
@@ -35,6 +36,7 @@ export class CloudCodeChatViewPane extends ViewPane {
 	private widget: CloudCodeChatWidget | undefined;
 	private controller: CloudCodeChatController | undefined;
 	private readonly context: CloudCodeContext;
+	private readonly attachmentInput: CloudCodeAttachmentInput;
 	private readonly editWorkspace: CloudCodeEditWorkspace;
 	private readonly agent: CloudCodeAgent;
 
@@ -55,6 +57,7 @@ export class CloudCodeChatViewPane extends ViewPane {
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 		this.context = instantiationService.createInstance(CloudCodeContext);
+		this.attachmentInput = instantiationService.createInstance(CloudCodeAttachmentInput, this.context);
 		this.editWorkspace = this._register(instantiationService.createInstance(CloudCodeEditWorkspace));
 		this.agent = new CloudCodeAgent(cloudCodeService, instantiationService.createInstance(CloudCodeAgentWorkspace), this.editWorkspace);
 		this._register(lifecycleService.onWillShutdown(event => {
@@ -68,7 +71,7 @@ export class CloudCodeChatViewPane extends ViewPane {
 		super.renderBody(container);
 		this.bodyContainer = container;
 		this.widget = this._register(new CloudCodeChatWidget(container, async (models, selected) => {
-			const items = models.map(model => ({ label: model.name, description: model.id, id: model.id }));
+			const items = models.map(model => ({ label: model.name, description: model.supportsImages ? localize('cloudcode.imageModelDescription', "{0} · Images", model.id) : model.id, id: model.id }));
 			const picked = await this.quickInputService.pick(items, {
 				placeHolder: localize('cloudcode.searchModels', "Search models by name or ID"),
 				matchOnDescription: true,
@@ -83,7 +86,7 @@ export class CloudCodeChatViewPane extends ViewPane {
 			];
 			const picked = await this.quickInputService.pick(items, { placeHolder: localize('cloudcode.chatMode', "Choose a chat mode"), activeItem: items.find(item => item.id === mode) });
 			return picked?.id;
-		}));
+		}, this.attachmentInput));
 		this.controller = this._register(new CloudCodeChatController(this.widget, {
 			assertWorkspaceTrusted: () => this.context.assertWorkspaceTrusted(),
 			pickAttachments: async () => {
@@ -91,9 +94,9 @@ export class CloudCodeChatViewPane extends ViewPane {
 				const items: { label: string; description: string; kind: CloudCodeAttachmentKind }[] = [
 					{ label: localize('cloudcode.attachFile', "Current File"), description: localize('cloudcode.attachFileDetail', "Include unsaved changes"), kind: 'file' },
 					{ label: localize('cloudcode.attachSelection', "Selected Code"), description: localize('cloudcode.attachSelectionDetail', "Only the selected code"), kind: 'selection' },
-					{ label: localize('cloudcode.attachFiles', "Choose Files…"), description: localize('cloudcode.attachFilesDetail', "Select one or more text files"), kind: 'files' },
+					{ label: localize('cloudcode.attachFiles', "Choose Files…"), description: localize('cloudcode.attachFilesDetail', "Select text files or images"), kind: 'files' },
 				];
-				const picked = await this.quickInputService.pick(items, { placeHolder: localize('cloudcode.attachContext', "Attach code to your next message") });
+				const picked = await this.quickInputService.pick(items, { placeHolder: localize('cloudcode.attachContext', "Attach files or images to your next message") });
 				return picked ? this.context.readAttachments(picked.kind) : [];
 			}
 		}, this.editWorkspace, this.agent, this.cloudCodeService));

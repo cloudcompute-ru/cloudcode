@@ -77,7 +77,7 @@ export class CloudCodeEditWorkspace extends Disposable implements ICloudCodeEdit
 		const models = new Set<ITextModel>();
 		try {
 			for (const attachment of attachments) {
-				if (!attachment.resource) {
+				if (attachment.image || !attachment.resource) {
 					throw new Error(localize('cloudCode.edits.missingResource', "Attach the file again before requesting an edit."));
 				}
 				const resource = URI.parse(attachment.resource);

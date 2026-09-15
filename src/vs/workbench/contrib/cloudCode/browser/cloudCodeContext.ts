@@ -3,14 +3,16 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { VSBuffer } from '../../../../base/common/buffer.js';
+import { encodeBase64, VSBuffer } from '../../../../base/common/buffer.js';
 import { Schemas } from '../../../../base/common/network.js';
-import { basename, relativePath } from '../../../../base/common/resources.js';
+import { basename, extname, relativePath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { getCodeEditor, isDiffEditor } from '../../../../editor/browser/editorBrowser.js';
 import { IRange } from '../../../../editor/common/core/range.js';
 import { ITextModel } from '../../../../editor/common/model.js';
 import { IModelService } from '../../../../editor/common/services/model.js';
+import { generateUuid } from '../../../../base/common/uuid.js';
+import { cloudCodeImageMimeType, CLOUDCODE_MAX_IMAGE_BYTES } from '../../../../platform/cloudCode/common/cloudCodeImages.js';
 import { localize } from '../../../../nls.js';
 import { IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { FileOperationError, FileOperationResult, IFileService } from '../../../../platform/files/common/files.js';
@@ -18,9 +20,9 @@ import { IWorkspaceContextService } from '../../../../platform/workspace/common/
 import { IWorkspaceTrustManagementService } from '../../../../platform/workspace/common/workspaceTrust.js';
 import { IEditorService } from '../../../services/editor/common/editorService.js';
 import { ITextFileService, TextFileOperationError, TextFileOperationResult } from '../../../services/textfile/common/textfiles.js';
-import { CLOUDCODE_MAX_ATTACHMENT_BYTES, CLOUDCODE_MAX_ATTACHMENTS, CLOUDCODE_MAX_ATTACHMENTS_BYTES, CloudCodeAttachmentKind, ICloudCodeAttachment } from '../common/cloudCodeChatContext.js';
+import { CLOUDCODE_MAX_ATTACHMENT_BYTES, CLOUDCODE_MAX_ATTACHMENTS, CloudCodeAttachmentKind, ICloudCodeAttachment, mergeCloudCodeAttachments } from '../common/cloudCodeChatContext.js';
 
-/** Reads only explicitly attached text, capturing editor buffers without saving them. */
+/** Reads only explicitly attached files and images, capturing editor buffers without saving them. */
 export class CloudCodeContext {
 
 	constructor(
@@ -75,21 +77,46 @@ export class CloudCodeContext {
 		if (!resources?.length) {
 			return [];
 		}
-		const uniqueResources = [...new Map(resources.map(resource => [resource.toString(), resource])).values()];
-		if (uniqueResources.length > CLOUDCODE_MAX_ATTACHMENTS) {
+		return this.readResources(resources);
+	}
+
+	/** Picker, clipboard and Explorer drops share the same snapshot and trust checks. */
+	async readResources(resources: readonly URI[]): Promise<readonly ICloudCodeAttachment[]> {
+		this.assertWorkspaceTrusted();
+		const unique = [...new Map(resources.map(resource => [resource.toString(), resource])).values()];
+		if (unique.length > CLOUDCODE_MAX_ATTACHMENTS) {
 			throw new Error(localize('cloudCode.context.tooMany', "Attach up to {0} files at a time.", CLOUDCODE_MAX_ATTACHMENTS));
 		}
-		const attachments: ICloudCodeAttachment[] = [];
-		let totalBytes = 0;
-		for (const resource of uniqueResources) {
-			const attachment = await this.readFile(resource);
-			totalBytes += VSBuffer.fromString(attachment.content).byteLength;
-			if (totalBytes > CLOUDCODE_MAX_ATTACHMENTS_BYTES) {
-				throw new Error(localize('cloudCode.context.batchTooLarge', "Attachments must total {0} KiB or less. Choose fewer files or attach a selection.", CLOUDCODE_MAX_ATTACHMENTS_BYTES / 1024));
-			}
-			attachments.push(attachment);
+		let attachments: readonly ICloudCodeAttachment[] = [];
+		for (const resource of unique) {
+			attachments = mergeCloudCodeAttachments(attachments, [await this.readFile(resource)]);
 		}
 		return attachments;
+	}
+
+	/** Clipboard blobs have no editable resource and are never written to the workspace. */
+	readFileData(name: string, bytes: Uint8Array): ICloudCodeAttachment {
+		this.assertWorkspaceTrusted();
+		const label = basename(URI.file(name));
+		const mimeType = cloudCodeImageMimeType(bytes);
+		if (mimeType) {
+			if (bytes.byteLength > CLOUDCODE_MAX_IMAGE_BYTES) {
+				throw new Error(localize('cloudcode.imageTooLarge', "Images must be 4 MiB or smaller."));
+			}
+			return { id: generateUuid(), label, content: '', image: { dataUrl: `data:${mimeType};base64,${encodeBase64(VSBuffer.wrap(bytes))}` } };
+		}
+		if (/\.(png|jpe?g|gif|webp|svg|bmp|ico|avif|heic)$/i.test(label)) {
+			throw new Error(localize('cloudcode.unsupportedImage', "Use a valid PNG, JPEG, GIF, or WebP image."));
+		}
+		this.assertSize(bytes.byteLength, URI.file(label));
+		let content: string;
+		try {
+			content = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+		} catch {
+			throw this.binaryFileError(URI.file(label));
+		}
+		this.assertContent(content, URI.file(label));
+		return { id: generateUuid(), label, content };
 	}
 
 	private async readFile(resource: URI): Promise<ICloudCodeAttachment> {
@@ -103,6 +130,14 @@ export class CloudCodeContext {
 		this.assertWorkspaceTrusted();
 		if (!stat.isFile) {
 			throw new Error(localize('cloudCode.context.notFile', "'{0}' is not a text file.", basename(resource)));
+		}
+		if (/^\.(png|jpe?g|gif|webp|svg|bmp|ico|avif|heic)$/i.test(extname(resource))) {
+			if (stat.size > CLOUDCODE_MAX_IMAGE_BYTES) {
+				throw new Error(localize('cloudcode.imageTooLarge', "Images must be 4 MiB or smaller."));
+			}
+			const file = await this.fileService.readFile(resource, { limits: { size: CLOUDCODE_MAX_IMAGE_BYTES } });
+			const image = this.readFileData(basename(resource), file.value.buffer);
+			return { ...image, id: resource.toString(), label: this.resourceLabel(resource) };
 		}
 		this.assertSize(stat.size, resource);
 		let content: string;
@@ -167,7 +202,7 @@ export class CloudCodeContext {
 	}
 
 	private binaryFileError(resource: URI): Error {
-		return new Error(localize('cloudCode.context.binary', "'{0}' contains binary data. Only text files can be attached.", basename(resource)));
+		return new Error(localize('cloudCode.context.binary', "'{0}' contains binary data. Attach a text file or a PNG, JPEG, GIF, or WebP image.", basename(resource)));
 	}
 
 	private resourceLabel(resource: URI): string {

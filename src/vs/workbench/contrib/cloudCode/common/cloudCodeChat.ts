@@ -20,7 +20,7 @@ export type CloudCodeChatStatus = 'disconnected' | 'loading' | 'ready' | 'runnin
 
 /** The view receives account details and text only, never authentication credentials. */
 export interface ICloudCodeChatView {
-	readonly onDidRequestAttachments: Event<void>;
+	readonly onDidRequestAttachments: Event<void | (() => Promise<readonly ICloudCodeAttachment[]>)>;
 	readonly onDidRemoveAttachment: Event<string>;
 	readonly onDidSubmit: Event<string>;
 	readonly onDidChangeMode: Event<CloudCodeChatMode>;

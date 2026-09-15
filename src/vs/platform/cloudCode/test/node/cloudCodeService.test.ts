@@ -72,6 +72,27 @@ suite('CloudCode service', () => {
 		return true;
 	}
 
+	test('serializes image references as standard content parts while retaining plain text turns', async () => {
+		const { service, requests } = setupService(async options => options.url?.endsWith('/chat/completions') ? {
+			res: { statusCode: 200, headers: { 'content-type': 'text/event-stream' } },
+			stream: bufferToStream(VSBuffer.fromString('data: [DONE]\n\n')),
+		} : json(account), await savedSession());
+		const image = { dataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aM1sAAAAASUVORK5CYII=' };
+		await service.streamChat('image', 'test-model', [{ role: 'user', content: 'Hello' }, { role: 'assistant', content: 'Hi' }, { role: 'user', content: 'Describe', images: [image] }]);
+		const request = requests.find(request => request.url?.endsWith('/chat/completions'))!;
+		assert.deepStrictEqual(JSON.parse(request.data!).messages, [
+			{ role: 'user', content: 'Hello' }, { role: 'assistant', content: 'Hi' },
+			{ role: 'user', content: [{ type: 'text', text: 'Describe' }, { type: 'image_url', image_url: { url: image.dataUrl } }] }
+		]);
+	});
+
+	test('rejects external image URLs and assistant images before any network request', async () => {
+		const { service, requests } = setupService(async () => { throw new Error('Unexpected request'); });
+		await assert.rejects(service.streamChat('external', 'test-model', [{ role: 'user', content: 'Image', images: [{ dataUrl: 'https://example.com/private.png' }] }]));
+		await assert.rejects(service.streamChat('assistant', 'test-model', [{ role: 'assistant', content: 'Image', images: [{ dataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aM1sAAAAASUVORK5CYII=' }] }]));
+		assert.strictEqual(requests.length, 0);
+	});
+
 	test('restores an expired session with one shared refresh and accepts a hidden balance', async () => {
 		const refreshStarted = new DeferredPromise<void>();
 		const refreshResult = new DeferredPromise<IRequestContext>();

@@ -3,13 +3,14 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { cloudCodeImagesWithinLimit } from '../../../../platform/cloudCode/common/cloudCodeImages.js';
 import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { CancellationError, isCancellationError } from '../../../../base/common/errors.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { localize } from '../../../../nls.js';
 import { CLOUDCODE_MAX_CONTEXT_BYTES, CLOUDCODE_MAX_MESSAGE_LENGTH, CLOUDCODE_MAX_MESSAGES, ICloudCodeMessage, ICloudCodeModel, ICloudCodeService, ICloudCodeState } from '../../../../platform/cloudCode/common/cloudCode.js';
-import { formatCloudCodePrompt, ICloudCodeAttachment, ICloudCodeContextProvider, mergeCloudCodeAttachments } from './cloudCodeChatContext.js';
+import { cloudCodeUserMessage, formatCloudCodePrompt, ICloudCodeAttachment, ICloudCodeContextProvider, mergeCloudCodeAttachments } from './cloudCodeChatContext.js';
 import { ICloudCodeChatMessage, ICloudCodeChatView } from './cloudCodeChat.js';
 import { ICloudCodeAgent } from './cloudCodeAgent.js';
 import { CloudCodeChatMode, formatCloudCodeEditPrompt, ICloudCodeEditProposal, ICloudCodeEditProvider, ICloudCodeEditTarget, parseCloudCodeEdits } from './cloudCodeEdits.js';
@@ -33,7 +34,7 @@ export class CloudCodeChatController extends Disposable {
 	private editProposals: readonly ICloudCodeEditProposal[] = [];
 	private editBusy = false;
 	private editRevision = 0;
-	private activeRequest: { id: string; prompt: string; text: string; hasAttachments: boolean; targets?: readonly ICloudCodeEditTarget[] } | undefined;
+	private activeRequest: { id: string; message: ICloudCodeMessage; text: string; hasAttachments: boolean; targets?: readonly ICloudCodeEditTarget[] } | undefined;
 	private activeAgent: { source: CancellationTokenSource; completion: Promise<void>; conversation: number; activity: string[] } | undefined;
 	private agentConversation = 0;
 	private disposed = false;
@@ -59,7 +60,7 @@ export class CloudCodeChatController extends Disposable {
 				}
 			}
 		}));
-		this._register(view.onDidRequestAttachments(() => void this.attachContext()));
+		this._register(view.onDidRequestAttachments(read => void this.attachContext(read || undefined)));
 		this._register(view.onDidRemoveAttachment(id => {
 			if (this.editBusy || this.running) {
 				return;
@@ -191,8 +192,8 @@ export class CloudCodeChatController extends Disposable {
 		}
 	}
 
-	private async attachContext(): Promise<void> {
-		if (!this.contextProvider || this.disposed || this.loadingAttachments || this.editBusy || this.running || this.state.status !== 'signedIn') {
+	private async attachContext(read?: () => Promise<readonly ICloudCodeAttachment[]>): Promise<void> {
+		if (!this.contextProvider || this.disposed || this.loadingAttachments || this.editBusy || this.hasPendingEdits() || this.running || this.state.status !== 'signedIn') {
 			return;
 		}
 		const revision = ++this.attachmentRevision;
@@ -200,11 +201,13 @@ export class CloudCodeChatController extends Disposable {
 		this.view.setError(undefined);
 		this.view.setAttachments(this.attachments, true);
 		try {
-			const attachments = await this.contextProvider.pickAttachments();
+			const attachments = await (read ? read() : this.contextProvider.pickAttachments());
 			if (this.disposed || revision !== this.attachmentRevision) {
 				return;
 			}
-			this.contextProvider.assertWorkspaceTrusted();
+			if (attachments.length) {
+				this.contextProvider.assertWorkspaceTrusted();
+			}
 			this.attachments = mergeCloudCodeAttachments(this.attachments, attachments);
 		} catch (error) {
 			if (revision === this.attachmentRevision) {
@@ -223,6 +226,12 @@ export class CloudCodeChatController extends Disposable {
 		if (this.disposed || this.state.status !== 'signedIn' || !this.selectedModel || this.loadingModels || this.loadingAttachments || this.editBusy || this.hasPendingEdits() || this.running || !prompt) {
 			return;
 		}
+		if (this.models.find(model => model.id === this.selectedModel)?.supportsImages === false
+			&& (this.attachments.some(attachment => attachment.image) || this.mode === 'ask' && this.history.some(message => message.images?.length))) {
+			this.view.setDraft(prompt);
+			this.view.setError(localize('cloudcode.imageModelNeeded', "Choose a model that supports images before sending screenshots."));
+			return;
+		}
 		if (this.mode === 'agent') {
 			this.submitAgent(prompt, this.selectedModel);
 			return;
@@ -239,7 +248,7 @@ export class CloudCodeChatController extends Disposable {
 		let targets: readonly ICloudCodeEditTarget[] | undefined;
 		if (this.mode === 'edit') {
 			this.view.setDraft(prompt);
-			if (!this.editProvider || !this.attachments.length) {
+			if (!this.editProvider || !this.attachments.some(attachment => !attachment.image)) {
 				this.view.setError(localize('cloudcode.editNeedsAttachments', "Attach a file or selection before requesting edits."));
 				return;
 			}
@@ -249,7 +258,7 @@ export class CloudCodeChatController extends Disposable {
 			this.view.setEditProposals(this.editProposals, true);
 			this.updateStatus();
 			try {
-				targets = await this.editProvider.prepare(this.attachments);
+				targets = await this.editProvider.prepare(this.attachments.filter(attachment => !attachment.image));
 				if (this.disposed || revision !== this.editRevision) {
 					return;
 				}
@@ -269,7 +278,8 @@ export class CloudCodeChatController extends Disposable {
 		}
 		// Edit requests use only the current instruction and freshly validated targets.
 		const content = targets ? formatCloudCodeEditPrompt(prompt, targets) : formatCloudCodePrompt(prompt, this.attachments);
-		const context: ICloudCodeMessage[] = [...(targets ? [] : this.history), { role: 'user', content }];
+		const message = cloudCodeUserMessage(content, this.attachments);
+		const context: ICloudCodeMessage[] = [...(targets ? [] : this.history), message];
 		const encoder = new TextEncoder();
 		if (prompt.length > CLOUDCODE_MAX_MESSAGE_LENGTH) {
 			if (targets) {
@@ -287,7 +297,7 @@ export class CloudCodeChatController extends Disposable {
 			this.view.setError(localize('cloudcode.messageAndContextTooLong', "The message and attachments are too long. Shorten the message or remove an attachment."));
 			return;
 		}
-		if (context.length > CLOUDCODE_MAX_MESSAGES || context.some(message => message.content.length > CLOUDCODE_MAX_MESSAGE_LENGTH) || context.reduce((size, message) => size + encoder.encode(message.content).byteLength, 0) > CLOUDCODE_MAX_CONTEXT_BYTES) {
+		if (!cloudCodeImagesWithinLimit(context.flatMap(message => message.images ?? [])) || context.length > CLOUDCODE_MAX_MESSAGES || context.some(message => message.content.length > CLOUDCODE_MAX_MESSAGE_LENGTH) || context.reduce((size, message) => size + encoder.encode(message.content).byteLength, 0) > CLOUDCODE_MAX_CONTEXT_BYTES) {
 			this.view.setDraft(prompt);
 			if (targets) {
 				this.editProvider?.clear();
@@ -295,7 +305,7 @@ export class CloudCodeChatController extends Disposable {
 			this.view.setError(localize('cloudcode.conversationTooLong', "This conversation has reached the chat context limit. Start a New Chat and shorten long messages to continue."));
 			return;
 		}
-		const request = { id: generateUuid(), prompt: content, text: '', hasAttachments: this.attachments.length > 0, targets };
+		const request = { id: generateUuid(), message, text: '', hasAttachments: this.attachments.length > 0, targets };
 		this.activeRequest = request;
 		this.messages.push({ role: 'user', text: prompt, attachments: this.attachments }, { role: 'assistant', text: targets ? localize('cloudcode.preparingEdits', "Preparing proposed changes…") : '' });
 		this.view.setDraft('');
@@ -362,7 +372,7 @@ export class CloudCodeChatController extends Disposable {
 				this.editProposals = result.edits.map(edit => ({ ...edit, id: generateUuid(), status: 'pending', reviewed: false }));
 				this.messages[responseIndex] = { role: 'assistant', text: result.text, attachments: result.attachments, activity: [...request.activity] };
 				if (!result.edits.length) {
-					this.history = [{ role: 'user', content: formatCloudCodePrompt(prompt, result.attachments) }, { role: 'assistant', content: result.text }];
+					this.history = [cloudCodeUserMessage(formatCloudCodePrompt(prompt, result.attachments), result.attachments), { role: 'assistant', content: result.text }];
 					this.historyHasAttachments = result.attachments.length > 0;
 				}
 				this.view.setEditProposals(this.editProposals, false);
@@ -423,7 +433,7 @@ export class CloudCodeChatController extends Disposable {
 		this.messages[this.messages.length - 1] = { role: 'assistant', text: responseText, incomplete };
 		if (!incomplete && !request.targets) {
 			this.historyHasAttachments ||= request.hasAttachments;
-			this.history.push({ role: 'user', content: request.prompt }, { role: 'assistant', content: request.text });
+			this.history.push(request.message, { role: 'assistant', content: request.text });
 		}
 		this.activeRequest = undefined;
 		this.view.setMessages(this.messages);

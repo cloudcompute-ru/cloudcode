@@ -4,6 +4,10 @@
  *--------------------------------------------------------------------------------------------*/
 
 import './media/cloudCodeChat.css';
+import { DataTransfers } from '../../../../base/browser/dnd.js';
+import { CodeDataTransfers, containsDragType } from '../../../../platform/dnd/browser/dnd.js';
+import { cloudCodeImageBytes } from '../../../../platform/cloudCode/common/cloudCodeImages.js';
+import { CloudCodeAttachmentInput } from './cloudCodeAttachmentInput.js';
 import * as dom from '../../../../base/browser/dom.js';
 import { Button } from '../../../../base/browser/ui/button/button.js';
 import { ProgressBar } from '../../../../base/browser/ui/progressbar/progressbar.js';
@@ -29,6 +33,7 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 	private readonly attachmentHint: HTMLElement;
 	private readonly attachmentDisposables = this._register(new DisposableStore());
 	private loadingAttachments = false;
+	private draftRevision = 0;
 	private readonly statusLabel: HTMLElement;
 	private readonly connectionHint: HTMLElement;
 	private readonly progressBar: ProgressBar;
@@ -62,7 +67,7 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 	readonly onDidChangeMode = this.changeModeEmitter.event;
 	private readonly reviewEditEmitter = this._register(new Emitter<{ id: string; action: 'preview' | 'accept' | 'reject' }>());
 	readonly onDidReviewEdit = this.reviewEditEmitter.event;
-	private readonly requestAttachmentsEmitter = this._register(new Emitter<void>());
+	private readonly requestAttachmentsEmitter = this._register(new Emitter<void | (() => Promise<readonly ICloudCodeAttachment[]>)>());
 	readonly onDidRequestAttachments = this.requestAttachmentsEmitter.event;
 	private readonly removeAttachmentEmitter = this._register(new Emitter<string>());
 	readonly onDidRemoveAttachment = this.removeAttachmentEmitter.event;
@@ -87,6 +92,7 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 		parent: HTMLElement,
 		private readonly pickModel: (models: readonly ICloudCodeModel[], selected: string | undefined) => Promise<string | undefined> = async () => undefined,
 		private readonly pickMode: (mode: CloudCodeChatMode) => Promise<CloudCodeChatMode | undefined> = async mode => mode === 'ask' ? 'agent' : mode === 'agent' ? 'edit' : 'ask',
+		private readonly attachmentInput?: CloudCodeAttachmentInput,
 	) {
 		super();
 
@@ -169,11 +175,73 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 
 		this.connectionHint = dom.append(composer, dom.$('p.cloudcode-chat-hint'));
 
-		this._register(dom.addDisposableListener(this.prompt, dom.EventType.INPUT, () => this.updateControls()));
+		this._register(dom.addDisposableListener(this.prompt, dom.EventType.INPUT, () => { this.draftRevision++; this.updateControls(); }));
 		this._register(dom.addDisposableListener(this.prompt, dom.EventType.KEY_DOWN, (event: KeyboardEvent) => {
 			if (event.key === 'Enter' && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey && !event.isComposing && this.status === 'ready') {
 				event.preventDefault();
 				this.submit();
+			}
+		}));
+		this._register(dom.addDisposableListener(this.prompt, 'paste', (event: ClipboardEvent) => {
+			if (!this.attachmentInput || !this.attachButton.enabled) {
+				return;
+			}
+			const files = Array.from(event.clipboardData?.files ?? []);
+			const text = event.clipboardData?.getData('text/plain') ?? '';
+			const start = this.prompt.selectionStart;
+			const end = this.prompt.selectionEnd;
+			const revision = this.draftRevision;
+			event.preventDefault();
+			event.stopPropagation();
+			this.requestAttachmentsEmitter.fire(async () => {
+				const attachments = await this.attachmentInput!.readPaste(files, text.length > 0);
+				if (!attachments.length && text && !this._store.isDisposed && revision === this.draftRevision && this.state.status === 'signedIn') {
+					this.prompt.setSelectionRange(start, end);
+					if (this.prompt.ownerDocument.activeElement !== this.prompt || !this.prompt.ownerDocument.execCommand('insertText', false, text)) {
+						this.prompt.setRangeText(text, start, end, 'end');
+					}
+
+					this.draftRevision++;
+					this.updateControls();
+				}
+				return attachments;
+			});
+		}));
+		let dragDepth = 0;
+		const isFileDrag = (event: DragEvent) => containsDragType(event, DataTransfers.RESOURCES, DataTransfers.FILES, CodeDataTransfers.EDITORS, CodeDataTransfers.FILES);
+		this._register(dom.addDisposableListener(this.domNode, 'dragenter', (event: DragEvent) => {
+			if (this.attachmentInput && isFileDrag(event)) {
+				event.preventDefault();
+				event.stopPropagation();
+				dragDepth++;
+				composer.classList.toggle('cloudcode-chat-drop-target', this.attachButton.enabled);
+			}
+		}));
+		this._register(dom.addDisposableListener(this.domNode, 'dragover', (event: DragEvent) => {
+			if (this.attachmentInput && isFileDrag(event)) {
+				event.preventDefault();
+				event.stopPropagation();
+				if (event.dataTransfer) {
+					event.dataTransfer.dropEffect = this.attachButton.enabled ? 'copy' : 'none';
+				}
+			}
+		}));
+		this._register(dom.addDisposableListener(this.domNode, 'dragleave', () => {
+			if (--dragDepth <= 0) {
+				dragDepth = 0;
+				composer.classList.remove('cloudcode-chat-drop-target');
+			}
+		}));
+		this._register(dom.addDisposableListener(this.domNode, 'drop', (event: DragEvent) => {
+			dragDepth = 0;
+			composer.classList.remove('cloudcode-chat-drop-target');
+			if (this.attachmentInput && isFileDrag(event)) {
+				event.preventDefault();
+				event.stopPropagation();
+				if (this.attachButton.enabled) {
+					this.requestAttachmentsEmitter.fire(this.attachmentInput.captureDrop(event));
+					this.focus();
+				}
 			}
 		}));
 		this._register(this.sendButton.onDidClick(() => this.submit()));
@@ -313,9 +381,17 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 	}
 
 	private renderAttachment(parent: HTMLElement, attachment: ICloudCodeAttachment): void {
-		const details = dom.append(parent, dom.$('details.cloudcode-chat-attachment-preview'));
-		dom.append(details, dom.$('summary')).textContent = localize('cloudcode.attachmentSummary', "{0} ({1} KiB)", attachment.label, (new TextEncoder().encode(attachment.content).byteLength / 1024).toFixed(1));
-		dom.append(details, dom.$('pre')).textContent = attachment.content;
+		const details = dom.append(parent, dom.$<HTMLDetailsElement>('details.cloudcode-chat-attachment-preview'));
+		dom.append(details, dom.$('summary')).textContent = localize('cloudcode.attachmentSummary', "{0} ({1} KiB)", attachment.label, ((attachment.image ? cloudCodeImageBytes(attachment.image.dataUrl) ?? 0 : new TextEncoder().encode(attachment.content).byteLength) / 1024).toFixed(1));
+		if (attachment.image && cloudCodeImageBytes(attachment.image.dataUrl) !== undefined) {
+			const image = dom.append(details, dom.$<HTMLImageElement>('img.cloudcode-chat-image'));
+			image.src = attachment.image.dataUrl;
+			image.alt = attachment.label;
+			details.open = true;
+		} else {
+			dom.append(details, dom.$('pre')).textContent = attachment.content;
+		}
+
 	}
 
 	setSession(state: ICloudCodeState): void {
@@ -366,7 +442,7 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 				this.renderAttachment(row, attachment);
 			}
 			if (message.activity?.length) {
-				const activity = dom.append(row, dom.$('details.cloudcode-chat-attachment-preview'));
+				const activity = dom.append(row, dom.$<HTMLDetailsElement>('details.cloudcode-chat-attachment-preview'));
 				dom.append(activity, dom.$('summary')).textContent = localize('cloudcode.agentActivity', "Agent Activity");
 				dom.append(activity, dom.$('pre')).textContent = message.activity.join('\n');
 			}
@@ -400,6 +476,7 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 	}
 
 	setDraft(value: string): void {
+		this.draftRevision++;
 		this.prompt.value = value;
 		this.updateControls();
 	}
