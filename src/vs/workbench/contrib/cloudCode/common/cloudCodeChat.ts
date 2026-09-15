@@ -22,6 +22,8 @@ export type CloudCodeChatStatus = 'disconnected' | 'loading' | 'ready' | 'runnin
 
 /** The view receives presentation data, never authentication credentials. */
 export interface ICloudCodeChatView {
+	readonly onDidSelectConversation: Event<string>;
+	readonly onDidChangeDraft: Event<void>;
 	readonly onDidRequestAttachments: Event<void | (() => Promise<readonly ICloudCodeAttachment[]>)>;
 	readonly onDidRemoveAttachment: Event<string>;
 	readonly onDidSubmit: Event<string>;
@@ -44,4 +46,6 @@ export interface ICloudCodeChatView {
 	setStatus(status: CloudCodeChatStatus): void;
 	setError(message: string | undefined): void;
 	setDraft(value: string): void;
+	getDraft(): string;
+	setConversations(chats: readonly { id: string; title: string }[], activeId: string): void;
 }

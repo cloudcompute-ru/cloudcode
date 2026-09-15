@@ -3,9 +3,11 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { toDisposable, IDisposable } from '../../../../base/common/lifecycle.js';
+import { StorageScope, StorageTarget, IStorageService } from '../../../../platform/storage/common/storage.js';
 import { size } from '../../../../base/browser/dom.js';
 import { localize } from '../../../../nls.js';
-import { ICloudCodeService } from '../../../../platform/cloudCode/common/cloudCode.js';
+import { cloudCodeOrigin, CLOUDCODE_DEFAULT_SERVER, CLOUDCODE_SERVER_SETTING, ICloudCodeService } from '../../../../platform/cloudCode/common/cloudCode.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { IContextMenuService } from '../../../../platform/contextview/browser/contextView.js';
@@ -26,6 +28,7 @@ import { CloudCodeAgentWorkspace } from './cloudCodeAgentWorkspace.js';
 import { CloudCodeAgent } from '../common/cloudCodeAgent.js';
 import { CloudCodeChatMode } from '../common/cloudCodeEdits.js';
 import { CloudCodeAttachmentKind } from '../common/cloudCodeChatContext.js';
+import { ICloudCodeConversationStorage } from '../common/cloudCodeConversations.js';
 import { CloudCodeChatController } from '../common/cloudCodeChatController.js';
 
 export class CloudCodeChatViewPane extends ViewPane {
@@ -39,6 +42,7 @@ export class CloudCodeChatViewPane extends ViewPane {
 	private readonly attachmentInput: CloudCodeAttachmentInput;
 	private readonly editWorkspace: CloudCodeEditWorkspace;
 	private readonly agent: CloudCodeAgent;
+	private readonly conversationStorage: ICloudCodeConversationStorage;
 
 	constructor(
 		options: IViewPaneOptions,
@@ -54,8 +58,14 @@ export class CloudCodeChatViewPane extends ViewPane {
 		@ICloudCodeService private readonly cloudCodeService: ICloudCodeService,
 		@IQuickInputService private readonly quickInputService: IQuickInputService,
 		@ILifecycleService lifecycleService: ILifecycleService,
+		@IStorageService storageService: IStorageService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
+		this.conversationStorage = {
+			scope: account => `cloudcode.chatHistory.v1.${encodeURIComponent(cloudCodeOrigin(configurationService.getValue<string>(CLOUDCODE_SERVER_SETTING) || CLOUDCODE_DEFAULT_SERVER))}.${account.user.id}.${account.team.id}`,
+			read: scope => storageService.get(scope, StorageScope.WORKSPACE),
+			write: (scope, value) => storageService.store(scope, value, StorageScope.WORKSPACE, StorageTarget.MACHINE)
+		};
 		this.context = instantiationService.createInstance(CloudCodeContext);
 		this.attachmentInput = instantiationService.createInstance(CloudCodeAttachmentInput, this.context);
 		this.editWorkspace = this._register(instantiationService.createInstance(CloudCodeEditWorkspace));
@@ -99,7 +109,7 @@ export class CloudCodeChatViewPane extends ViewPane {
 				const picked = await this.quickInputService.pick(items, { placeHolder: localize('cloudcode.attachContext', "Attach files or images to your next message") });
 				return picked ? this.context.readAttachments(picked.kind) : [];
 			}
-		}, this.editWorkspace, this.agent, this.cloudCodeService));
+		}, this.editWorkspace, this.agent, this.conversationStorage, this.cloudCodeService));
 		void this.controller.initialize();
 	}
 
@@ -108,6 +118,13 @@ export class CloudCodeChatViewPane extends ViewPane {
 		if (this.bodyContainer) {
 			size(this.bodyContainer, width, height);
 		}
+	}
+
+	override renderTitleControl(container: HTMLElement): IDisposable | undefined {
+		const widget = this.widget;
+		if (!widget) { return undefined; }
+		container.appendChild(widget.titleControl);
+		return toDisposable(() => widget.domNode.prepend(widget.titleControl));
 	}
 
 	newConversation(): void {

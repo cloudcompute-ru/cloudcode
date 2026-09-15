@@ -120,6 +120,9 @@ export abstract class AbstractPaneCompositePart extends CompositePart<PaneCompos
 	readonly onDidPaneCompositeClose = this.onDidCompositeClose.event as Event<IPaneComposite>;
 
 	private titleContainer: HTMLElement | undefined;
+	private customTitleContainer: HTMLElement | undefined;
+	private readonly customTitle = this._register(new MutableDisposable<IDisposable>());
+	private readonly customTitleListener = this._register(new MutableDisposable<IDisposable>());
 	private headerFooterCompositeBarContainer: HTMLElement | undefined;
 	protected readonly headerFooterCompositeBarDispoables = this._register(new DisposableStore());
 	private paneCompositeBarContainer: HTMLElement | undefined;
@@ -225,11 +228,18 @@ export abstract class AbstractPaneCompositePart extends CompositePart<PaneCompos
 
 	protected override showComposite(composite: Composite): void {
 		super.showComposite(composite);
+		const container = (composite as PaneComposite).getViewPaneContainer();
+		this.customTitleListener.value = container?.onTitleAreaUpdate(() => this.updateCustomTitle());
+		this.updateCustomTitle();
 		this.layoutCompositeBar();
 		this.layoutEmptyMessage();
 	}
 
 	protected override hideActiveComposite(): Composite | undefined {
+		this.customTitleListener.clear();
+		this.customTitle.clear();
+		this.titleContainer?.classList.remove('has-custom-title');
+		if (this.customTitleContainer) { this.customTitleContainer.hidden = true; }
 		const composite = super.hideActiveComposite();
 		this.layoutCompositeBar();
 		this.layoutEmptyMessage();
@@ -381,6 +391,16 @@ export abstract class AbstractPaneCompositePart extends CompositePart<PaneCompos
 		this._register(CompositeDragAndDropObserver.INSTANCE.registerDraggable(this.titleLabelElement!, draggedItemProvider, {}));
 
 		return titleLabel;
+	}
+
+	private updateCustomTitle(): void {
+		if (!this.titleContainer) { return; }
+		this.customTitle.clear();
+		this.customTitleContainer ??= prepend(this.titleContainer, $('.custom-title-container'));
+		const container = (this.getActivePaneComposite() as PaneComposite | undefined)?.getViewPaneContainer();
+		this.customTitle.value = container?.isViewMergedWithContainer() ? container.panes[0].renderTitleControl(this.customTitleContainer) : undefined;
+		this.customTitleContainer.hidden = !this.customTitle.value;
+		this.titleContainer.classList.toggle('has-custom-title', !!this.customTitle.value);
 	}
 
 	protected updateCompositeBar(updateCompositeBarOption: boolean = false): void {

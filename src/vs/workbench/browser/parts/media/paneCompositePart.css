@@ -379,3 +379,21 @@
 	margin: 12px;
 	text-align: center;
 }
+
+.monaco-workbench .pane-composite-part > .title.has-custom-title > :is(.title-label, .composite-bar-container) {
+	display: none;
+}
+
+.monaco-workbench .pane-composite-part > .title > .custom-title-container {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+}
+
+.monaco-workbench .pane-composite-part > .title > .custom-title-container[hidden] {
+	display: none;
+}
+
+.monaco-workbench .pane-composite-part > .title.has-custom-title > .title-actions {
+	flex: 0 0 auto;
+}

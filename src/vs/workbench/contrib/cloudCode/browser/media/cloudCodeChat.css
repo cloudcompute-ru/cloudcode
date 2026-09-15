@@ -42,6 +42,7 @@
 }
 
 .cloudcode-chat .cloudcode-chat-model {
+	display: block;
 	flex: 1;
 	min-width: 0;
 	max-width: 100%;
@@ -278,18 +279,53 @@
 
 .cloudcode-chat .cloudcode-chat-attachments {
 	display: flex;
-	flex-direction: column;
+	flex-wrap: wrap;
 	gap: var(--vscode-spacing-size40);
-	margin-bottom: var(--vscode-spacing-size80);
 	max-height: 200px;
 	overflow: auto;
+	margin-bottom: var(--vscode-spacing-size80);
 }
 
-.cloudcode-chat .cloudcode-chat-attachment {
-	display: flex;
-	align-items: flex-start;
-	gap: var(--vscode-spacing-size40);
+.cloudcode-chat .cloudcode-chat-attachment-chip {
+	display: inline-flex;
+	align-items: center;
+	max-width: 100%;
+	border-radius: var(--vscode-cornerRadius-small);
+	background: var(--vscode-badge-background, var(--vscode-editorWidget-background));
+	color: var(--vscode-badge-foreground, var(--vscode-foreground));
 }
+
+.cloudcode-chat .cloudcode-chat-attachment-chip button {
+	background: transparent;
+	border: none;
+	color: inherit;
+	font: inherit;
+	cursor: pointer;
+	padding: var(--vscode-spacing-size40);
+}
+
+.cloudcode-chat .cloudcode-chat-attachment-name {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size40);
+	min-width: 0;
+}
+
+.cloudcode-chat .cloudcode-chat-attachment-name span:last-child {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.cloudcode-chat .cloudcode-chat-attachment-thumbnail {
+	width: 20px;
+	height: 20px;
+	object-fit: cover;
+	border-radius: var(--vscode-cornerRadius-small);
+}
+
+.cloudcode-chat .cloudcode-chat-attachment-remove { flex-shrink: 0; }
+.cloudcode-chat .cloudcode-chat-chip-preview { flex-basis: 100%; min-width: 0; }
 
 .cloudcode-chat .cloudcode-chat-attachment-preview {
 	flex: 1;
@@ -378,8 +414,82 @@
 	border-radius: var(--vscode-cornerRadius-small);
 }
 
-.cloudcode-chat .cloudcode-chat-drop-target {
+.cloudcode-chat .cloudcode-chat-input.cloudcode-chat-drop-target {
 	outline: 2px solid var(--vscode-focusBorder);
 	outline-offset: -2px;
 	background: var(--vscode-list-dropBackground);
+}
+
+.cloudcode-chat .cloudcode-chat-input {
+	padding: var(--vscode-spacing-size80);
+	border: var(--vscode-strokeThickness) solid var(--vscode-input-border, var(--vscode-widget-border, transparent));
+	border-radius: var(--vscode-cornerRadius-large);
+	background: var(--vscode-input-background);
+}
+
+.cloudcode-chat .cloudcode-chat-input:focus-within {
+	border-color: var(--vscode-focusBorder);
+}
+
+.cloudcode-chat .cloudcode-chat-input .cloudcode-chat-prompt {
+	border: none;
+	outline: none;
+	padding: 0;
+	resize: vertical;
+	min-height: 60px;
+}
+
+.cloudcode-chat .cloudcode-chat-input .cloudcode-chat-attachment-toolbar { margin: 0; }
+
+.cloudcode-chat :is(.cloudcode-chat-attachment-name, .cloudcode-chat-attachment-remove):focus-visible,
+.cloudcode-chat-title-control button:focus-visible {
+	outline: var(--vscode-strokeThickness) solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.cloudcode-chat-title-control {
+	display: flex;
+	align-items: stretch;
+	min-width: 0;
+	width: 100%;
+	font-size: var(--vscode-fontSize-body1);
+	color: var(--vscode-foreground);
+	font-family: inherit;
+}
+
+.cloudcode-chat-tabs {
+	display: flex;
+	flex: 1;
+	min-width: 0;
+	overflow-x: auto;
+	scrollbar-width: thin;
+}
+
+.cloudcode-chat-tab {
+	flex: 0 0 auto;
+	min-width: 80px;
+	max-width: 180px;
+	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size120);
+	border: none;
+	border-bottom: 2px solid transparent;
+	background: transparent;
+	color: var(--vscode-descriptionForeground);
+	font: inherit;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	cursor: pointer;
+}
+
+.cloudcode-chat-tab[aria-selected="true"] {
+	color: var(--vscode-foreground);
+	border-bottom-color: var(--vscode-focusBorder);
+}
+
+.cloudcode-chat-title-control .cloudcode-chat-new {
+	width: auto;
+	flex-shrink: 0;
+	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size80);
+	background: transparent !important;
+	border: none;
 }

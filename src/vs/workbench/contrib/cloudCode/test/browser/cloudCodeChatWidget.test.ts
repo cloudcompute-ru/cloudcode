@@ -41,6 +41,32 @@ suite('CloudCodeChatWidget thinking state', () => {
 		assert.strictEqual(widget.domNode.querySelector('.cloudcode-chat-mode')?.textContent, 'Agent');
 	});
 
+	test('selects conversation tabs with click and arrow keys, retaining focus after updates', () => {
+		const chats = [{ id: 'first', title: 'Review package.json' }, { id: 'second', title: 'Fix the build' }];
+		const selected: string[] = [];
+		disposables.add(widget.onDidSelectConversation(id => { selected.push(id); widget.setConversations(chats, id); }));
+		widget.setConversations(chats, 'second');
+		widget.titleControl.querySelector<HTMLButtonElement>('[data-chat-id="first"]')!.click();
+		const first = widget.titleControl.querySelector<HTMLButtonElement>('[data-chat-id="first"]')!;
+		first.focus();
+		first.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+		assert.deepStrictEqual({ selected, focused: document.activeElement?.textContent, tabs: Array.from(widget.titleControl.querySelectorAll('[role="tab"]')).map(tab => tab.getAttribute('aria-selected')) }, {
+			selected: ['first', 'second'], focused: 'Fix the build', tabs: ['false', 'true']
+		});
+	});
+
+	test('shows compact attachment chips inside the composer with preview and remove actions', () => {
+		const removed: string[] = [];
+		disposables.add(widget.onDidRemoveAttachment(id => removed.push(id)));
+		widget.setAttachments([{ id: 'file', label: 'package.json', content: '{"private":true}', resource: 'file:///project/package.json' }], false);
+		const chip = widget.domNode.querySelector<HTMLElement>('.cloudcode-chat-input .cloudcode-chat-attachment-chip')!;
+		const preview = widget.domNode.querySelector<HTMLElement>('.cloudcode-chat-chip-preview')!;
+		assert.strictEqual(preview.hidden, true);
+		chip.querySelector<HTMLButtonElement>('.cloudcode-chat-attachment-name')!.click();
+		chip.querySelector<HTMLButtonElement>('.cloudcode-chat-attachment-remove')!.click();
+		assert.deepStrictEqual({ removed, previewHidden: preview.hidden, expanded: preview.querySelector('details')?.open, contents: preview.textContent?.includes('{"private":true}') }, { removed: ['file'], previewHidden: false, expanded: true, contents: true });
+	});
+
 	test('shows thinking until the first answer text while preserving the streamed text node', () => {
 		widget.setMessages([{ role: 'user', text: 'Review package.json' }, { role: 'assistant', text: '' }]);
 		const thinking = widget.domNode.querySelector<HTMLElement>('.cloudcode-chat-thinking')!;
