@@ -4,6 +4,8 @@
  *--------------------------------------------------------------------------------------------*/
 
 import './media/cloudCodeChat.css';
+import { Codicon } from '../../../../base/common/codicons.js';
+import { renderIcon } from '../../../../base/browser/ui/iconLabel/iconLabels.js';
 import { DataTransfers } from '../../../../base/browser/dnd.js';
 import { CodeDataTransfers, containsDragType } from '../../../../platform/dnd/browser/dnd.js';
 import { cloudCodeImageBytes } from '../../../../platform/cloudCode/common/cloudCodeImages.js';
@@ -24,6 +26,13 @@ import { CloudCodeChatMode, ICloudCodeEditProposal } from '../common/cloudCodeEd
 export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatView {
 
 	readonly domNode: HTMLElement;
+	readonly titleControl: HTMLElement;
+	private readonly tabList: HTMLElement;
+	private readonly tabDisposables = this._register(new DisposableStore());
+	private readonly selectConversationEmitter = this._register(new Emitter<string>());
+	readonly onDidSelectConversation = this.selectConversationEmitter.event;
+	private readonly changeDraftEmitter = this._register(new Emitter<void>());
+	readonly onDidChangeDraft = this.changeDraftEmitter.event;
 	private readonly conversation: HTMLElement;
 	private readonly emptyState: HTMLElement;
 	private readonly messages: HTMLElement;
@@ -32,6 +41,7 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 	private readonly attachmentsNode: HTMLElement;
 	private readonly attachmentHint: HTMLElement;
 	private readonly attachmentDisposables = this._register(new DisposableStore());
+	private readonly attachmentRemoveButtons: HTMLButtonElement[] = [];
 	private loadingAttachments = false;
 	private draftRevision = 0;
 	private readonly statusLabel: HTMLElement;
@@ -99,6 +109,13 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 		super();
 
 		this.domNode = dom.append(parent, dom.$('.cloudcode-chat'));
+		this.titleControl = dom.append(this.domNode, dom.$('.cloudcode-chat-title-control'));
+		this.tabList = dom.append(this.titleControl, dom.$('.cloudcode-chat-tabs', { role: 'tablist', 'aria-label': localize('cloudcode.conversations', "Conversations") }));
+		const newChat = this._register(new Button(this.titleControl, { ...defaultButtonStyles, secondary: true }));
+		newChat.element.classList.add('cloudcode-chat-new');
+		newChat.element.appendChild(renderIcon(Codicon.plus));
+		newChat.element.setAttribute('aria-label', localize('cloudcode.newChat', "New Chat"));
+		this._register(newChat.onDidClick(() => this.newConversation()));
 		const header = this.header = dom.append(this.domNode, dom.$('.cloudcode-chat-header'));
 		this.accountLabel = dom.append(header, dom.$('.cloudcode-chat-account'));
 		const accountActions = dom.append(header, dom.$('.cloudcode-chat-account-actions'));
@@ -132,11 +149,13 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 		const composer = dom.append(this.domNode, dom.$('.cloudcode-chat-composer'));
 		this.errorLabel = dom.append(composer, dom.$('p.cloudcode-chat-error', { role: 'alert' }));
 		this.errorLabel.hidden = true;
+		const input = dom.append(composer, dom.$('.cloudcode-chat-input'));
 		const attachmentToolbar = dom.append(composer, dom.$('.cloudcode-chat-attachment-toolbar'));
 		this.attachButton = this._register(new Button(attachmentToolbar, { ...defaultButtonStyles, secondary: true }));
-		this.attachButton.label = localize('cloudcode.attach', "Attach…");
+		this.attachButton.element.appendChild(renderIcon(Codicon.attach));
+		this.attachButton.element.setAttribute('aria-label', localize('cloudcode.attach', "Attach Files…"));
 		this.attachmentHint = dom.append(attachmentToolbar, dom.$('.cloudcode-chat-hint'));
-		this.attachmentsNode = dom.append(composer, dom.$('.cloudcode-chat-attachments', { 'aria-label': localize('cloudcode.attachments', "Attachments"), role: 'list' }));
+		this.attachmentsNode = dom.append(input, dom.$('.cloudcode-chat-attachments', { 'aria-label': localize('cloudcode.attachments', "Attachments"), role: 'list' }));
 		this._register(this.attachButton.onDidClick(() => this.requestAttachmentsEmitter.fire()));
 		const progress = dom.append(composer, dom.$('.cloudcode-chat-progress'));
 		this.progressBar = this._register(new ProgressBar(progress, {
@@ -144,14 +163,14 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 			ariaLabel: localize('cloudcode.progress', "CloudCode response in progress")
 		}));
 
-		const promptLabel = dom.append(composer, dom.$('label.cloudcode-chat-prompt-label'));
+		const promptLabel = dom.append(input, dom.$('label.cloudcode-chat-prompt-label'));
 		this.prompt = dom.append(promptLabel, dom.$('textarea.cloudcode-chat-prompt', {
 			rows: 3,
 			'aria-label': localize('cloudcode.message', "Message"),
 			placeholder: localize('cloudcode.promptPlaceholder', "Ask CloudCode…")
 		}));
 
-		const footer = dom.append(composer, dom.$('.cloudcode-chat-footer'));
+		const footer = dom.append(input, dom.$('.cloudcode-chat-footer'));
 		this.modelPicker = dom.append(footer, dom.$('.cloudcode-chat-model-picker'));
 		this.modeButton = this._register(new Button(this.modelPicker, { ...defaultButtonStyles, secondary: true }));
 		this.modeButton.element.classList.add('cloudcode-chat-mode');
@@ -169,6 +188,7 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 		this.retryModelsButton.label = localize('cloudcode.retryModels', "Retry");
 
 		this.statusLabel = dom.append(composer, dom.$('.cloudcode-chat-status', { role: 'status', 'aria-live': 'polite' }));
+		footer.appendChild(attachmentToolbar);
 		const actions = dom.append(footer, dom.$('.cloudcode-chat-actions'));
 		this.stopButton = this._register(new Button(actions, { ...defaultButtonStyles, secondary: true }));
 		this.stopButton.label = localize('cloudcode.stop', "Stop");
@@ -177,7 +197,7 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 
 		this.connectionHint = dom.append(composer, dom.$('p.cloudcode-chat-hint'));
 
-		this._register(dom.addDisposableListener(this.prompt, dom.EventType.INPUT, () => { this.draftRevision++; this.updateControls(); }));
+		this._register(dom.addDisposableListener(this.prompt, dom.EventType.INPUT, () => { this.draftRevision++; this.changeDraftEmitter.fire(); this.updateControls(); }));
 		this._register(dom.addDisposableListener(this.prompt, dom.EventType.KEY_DOWN, (event: KeyboardEvent) => {
 			if (event.key === 'Enter' && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey && !event.isComposing && this.status === 'ready') {
 				event.preventDefault();
@@ -204,6 +224,7 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 					}
 
 					this.draftRevision++;
+					this.changeDraftEmitter.fire();
 					this.updateControls();
 				}
 				return attachments;
@@ -216,7 +237,7 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 				event.preventDefault();
 				event.stopPropagation();
 				dragDepth++;
-				composer.classList.toggle('cloudcode-chat-drop-target', this.attachButton.enabled);
+				input.classList.toggle('cloudcode-chat-drop-target', this.attachButton.enabled);
 			}
 		}));
 		this._register(dom.addDisposableListener(this.domNode, 'dragover', (event: DragEvent) => {
@@ -231,12 +252,12 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 		this._register(dom.addDisposableListener(this.domNode, 'dragleave', () => {
 			if (--dragDepth <= 0) {
 				dragDepth = 0;
-				composer.classList.remove('cloudcode-chat-drop-target');
+				input.classList.remove('cloudcode-chat-drop-target');
 			}
 		}));
 		this._register(dom.addDisposableListener(this.domNode, 'drop', (event: DragEvent) => {
 			dragDepth = 0;
-			composer.classList.remove('cloudcode-chat-drop-target');
+			input.classList.remove('cloudcode-chat-drop-target');
 			if (this.attachmentInput && isFileDrag(event)) {
 				event.preventDefault();
 				event.stopPropagation();
@@ -366,24 +387,42 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 	setAttachments(attachments: readonly ICloudCodeAttachment[], loading: boolean): void {
 		this.loadingAttachments = loading;
 		this.attachmentDisposables.clear();
+		this.attachmentRemoveButtons.length = 0;
 		dom.clearNode(this.attachmentsNode);
 		this.attachmentsNode.hidden = attachments.length === 0;
 		this.attachmentHint.textContent = loading
 			? localize('cloudcode.readingAttachments', "Reading attachments…")
-			: attachments.length ? localize('cloudcode.snapshotHint', "Snapshots for your next message") : '';
+			: '';
 		for (const attachment of attachments) {
-			const row = dom.append(this.attachmentsNode, dom.$('.cloudcode-chat-attachment', { role: 'listitem' }));
-			this.renderAttachment(row, attachment);
-			const remove = this.attachmentDisposables.add(new Button(row, { ...defaultButtonStyles, secondary: true }));
-			remove.label = localize('cloudcode.removeAttachment', "Remove");
-			remove.element.setAttribute('aria-label', localize('cloudcode.removeNamedAttachment', "Remove {0}", attachment.label));
-			this.attachmentDisposables.add(remove.onDidClick(() => this.removeAttachmentEmitter.fire(attachment.id)));
+			const row = dom.append(this.attachmentsNode, dom.$('.cloudcode-chat-attachment-chip', { role: 'listitem' }));
+			const preview = dom.append(row, dom.$<HTMLButtonElement>('button.cloudcode-chat-attachment-name', { type: 'button', 'aria-expanded': 'false' }));
+			if (attachment.image && cloudCodeImageBytes(attachment.image.dataUrl) !== undefined) {
+				const image = dom.append(preview, dom.$<HTMLImageElement>('img.cloudcode-chat-attachment-thumbnail'));
+				image.src = attachment.image.dataUrl;
+				image.alt = attachment.label;
+			} else {
+				preview.appendChild(renderIcon(attachment.label.endsWith('.json') ? Codicon.json : Codicon.file));
+			}
+			dom.append(preview, dom.$('span')).textContent = attachment.label;
+			const content = dom.append(this.attachmentsNode, dom.$('.cloudcode-chat-chip-preview'));
+			content.hidden = true;
+			this.attachmentDisposables.add(dom.addDisposableListener(preview, 'click', () => {
+				if (!content.hasChildNodes()) { this.renderAttachment(content, attachment, true); }
+				content.hidden = !content.hidden;
+				preview.setAttribute('aria-expanded', String(!content.hidden));
+			}));
+			const remove = dom.append(row, dom.$<HTMLButtonElement>('button.cloudcode-chat-attachment-remove', { type: 'button', 'aria-label': localize('cloudcode.removeNamedAttachment', "Remove {0}", attachment.label) }));
+			remove.appendChild(renderIcon(Codicon.close));
+			this.attachmentRemoveButtons.push(remove);
+			this.attachmentDisposables.add(dom.addDisposableListener(remove, 'click', () => this.removeAttachmentEmitter.fire(attachment.id)));
 		}
+
 		this.updateControls();
 	}
 
-	private renderAttachment(parent: HTMLElement, attachment: ICloudCodeAttachment): void {
+	private renderAttachment(parent: HTMLElement, attachment: ICloudCodeAttachment, expanded = false): void {
 		const details = dom.append(parent, dom.$<HTMLDetailsElement>('details.cloudcode-chat-attachment-preview'));
+		details.open = expanded;
 		dom.append(details, dom.$('summary')).textContent = localize('cloudcode.attachmentSummary', "{0} ({1} KiB)", attachment.label, ((attachment.image ? cloudCodeImageBytes(attachment.image.dataUrl) ?? 0 : new TextEncoder().encode(attachment.content).byteLength) / 1024).toFixed(1));
 		if (attachment.image && cloudCodeImageBytes(attachment.image.dataUrl) !== undefined) {
 			const image = dom.append(details, dom.$<HTMLImageElement>('img.cloudcode-chat-image'));
@@ -501,6 +540,28 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 		this.errorLabel.hidden = !message;
 	}
 
+	getDraft(): string { return this.prompt.value; }
+
+	setConversations(chats: readonly { id: string; title: string }[], activeId: string): void {
+		const focused = this.tabList.contains(this.tabList.ownerDocument.activeElement);
+		this.tabDisposables.clear();
+		dom.clearNode(this.tabList);
+		for (const [index, chat] of chats.entries()) {
+			const tab = dom.append(this.tabList, dom.$<HTMLButtonElement>('button.cloudcode-chat-tab', { type: 'button', role: 'tab', 'aria-selected': String(chat.id === activeId), tabIndex: chat.id === activeId ? 0 : -1 }));
+			tab.textContent = chat.title;
+			tab.dataset.chatId = chat.id;
+			this.tabDisposables.add(dom.addDisposableListener(tab, 'click', () => this.selectConversationEmitter.fire(chat.id)));
+			this.tabDisposables.add(dom.addDisposableListener(tab, 'keydown', (event: KeyboardEvent) => {
+				const next = event.key === 'ArrowRight' ? (index + 1) % chats.length : event.key === 'ArrowLeft' ? (index + chats.length - 1) % chats.length : event.key === 'Home' ? 0 : event.key === 'End' ? chats.length - 1 : undefined;
+				if (next !== undefined) { event.preventDefault(); this.selectConversationEmitter.fire(chats[next].id); }
+			}));
+			if (chat.id === activeId) {
+				if (focused) { tab.focus(); }
+				tab.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+			}
+		}
+	}
+
 	setDraft(value: string): void {
 		this.draftRevision++;
 		this.prompt.value = value;
@@ -542,6 +603,9 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 		this.modeButton.enabled = canInteract && !this.loadingAttachments && !this.hasPendingProposals;
 		this.stopButton.enabled = this.status === 'running';
 		this.modelButton.enabled = canInteract && !this.hasPendingProposals && !this.loadingModels && this.models.length > 0;
+		for (const remove of this.attachmentRemoveButtons) {
+			remove.disabled = !canInteract || this.loadingAttachments || this.hasPendingProposals;
+		}
 		this.stopButton.element.hidden = this.status !== 'running';
 		for (const { proposal, preview, accept, reject } of this.proposalButtons) {
 			preview.enabled = canInteract;

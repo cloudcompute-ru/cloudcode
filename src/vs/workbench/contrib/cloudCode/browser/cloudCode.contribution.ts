@@ -176,7 +176,6 @@ registerAction2(class extends Action2 {
 		super({
 			id: 'cloudcode.newChat', title: localize2('cloudcode.newChatAction', "New Chat"),
 			icon: Codicon.plus, f1: true,
-			menu: { id: MenuId.ViewTitle, group: 'navigation', when: ContextKeyExpr.equals('view', CloudCodeChatViewPane.ID), order: 0 },
 		});
 	}
 	async run(accessor: ServicesAccessor): Promise<void> {

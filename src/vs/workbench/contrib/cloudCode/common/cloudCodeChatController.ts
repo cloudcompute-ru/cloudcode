@@ -4,6 +4,8 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { cloudCodeImagesWithinLimit } from '../../../../platform/cloudCode/common/cloudCodeImages.js';
+import { RunOnceScheduler } from '../../../../base/common/async.js';
+import { ICloudCodeConversation, ICloudCodeConversationStorage, parseCloudCodeConversations, serializeCloudCodeConversations } from './cloudCodeConversations.js';
 import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { CancellationError, isCancellationError } from '../../../../base/common/errors.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
@@ -39,12 +41,17 @@ export class CloudCodeChatController extends Disposable {
 	private agentConversation = 0;
 	private disposed = false;
 	private cancellationOnDispose: Promise<void> = Promise.resolve();
+	private conversations: ICloudCodeConversation[] = [];
+	private conversationId = generateUuid();
+	private conversationScope: string | undefined;
+	private readonly saveScheduler = this._register(new RunOnceScheduler(() => this.saveConversations(), 500));
 
 	constructor(
 		private readonly view: ICloudCodeChatView,
 		private readonly contextProvider: ICloudCodeContextProvider | undefined,
 		private readonly editProvider: ICloudCodeEditProvider | undefined,
 		private readonly agent: ICloudCodeAgent | undefined,
+		private readonly conversationStorage: ICloudCodeConversationStorage | undefined,
 		@ICloudCodeService private readonly service: ICloudCodeService,
 	) {
 		super();
@@ -74,6 +81,7 @@ export class CloudCodeChatController extends Disposable {
 				this.mode = mode;
 			}
 			this.view.setEditMode(this.mode);
+			this.saveScheduler.schedule();
 		}));
 		this._register(view.onDidReviewEdit(event => void this.reviewEdit(event.id, event.action)));
 		this.view.setEditMode(this.mode);
@@ -84,6 +92,9 @@ export class CloudCodeChatController extends Disposable {
 		this._register(view.onDidCancelSignIn(() => void this.cancelSignIn()));
 		this._register(view.onDidSignOut(() => void this.signOut()));
 		this._register(view.onDidNewConversation(() => this.newConversation()));
+		this._register(view.onDidSelectConversation(id => this.selectConversation(id)));
+		this._register(view.onDidChangeDraft(() => this.saveScheduler.schedule()));
+		this.renderConversations();
 		this._register(view.onDidRetryModels(() => void this.loadModels()));
 		this._register(view.onDidSelectModel(model => {
 			if (!this.running && !this.editBusy && this.models.some(candidate => candidate.id === model)) {
@@ -112,16 +123,34 @@ export class CloudCodeChatController extends Disposable {
 		const accountChanged = oldAccount?.user.id !== state.account?.user.id || oldAccount?.team.id !== state.account?.team.id;
 		const connectionChanged = this.state.status !== state.status;
 		const wasSignedIn = this.state.status === 'signedIn';
-		this.state = state;
 		if (accountChanged || wasSignedIn && state.status !== 'signedIn') {
-			this.newConversation();
+			this.resetConversation();
+			this.saveConversations();
+			this.conversations = [];
+			this.conversationScope = undefined;
+			this.conversationId = generateUuid();
+			this.selectedModel = undefined;
+			this.clearConversation();
 		}
+		this.state = state;
 		if (accountChanged || state.status !== 'signedIn') {
 			this.models = [];
-			this.selectedModel = undefined;
+			if (state.status !== 'signedIn') { this.selectedModel = undefined; }
 			this.loadingModels = false;
 			this.modelRequest++;
 		}
+		if (state.status === 'signedIn' && state.account && !this.conversationScope && this.conversationStorage) {
+			try {
+				this.conversationScope = this.conversationStorage.scope(state.account);
+				const archive = parseCloudCodeConversations(this.conversationStorage.read(this.conversationScope));
+				if (archive) {
+					this.conversations = [...archive.conversations];
+					const active = this.conversations.find(chat => chat.id === archive.activeId) ?? this.conversations.at(-1);
+					if (active) { this.restoreConversation(active); }
+				}
+			} catch (error) { this.showError(error); }
+		}
+		this.renderConversations();
 		this.view.setSession(state);
 		this.view.setModels(this.models, this.selectedModel, this.loadingModels);
 		this.updateStatus();
@@ -314,6 +343,7 @@ export class CloudCodeChatController extends Disposable {
 		this.view.setAttachments(this.attachments, false);
 		this.view.setError(undefined);
 		this.view.setMessages(this.messages);
+		this.renderConversations();
 		this.updateStatus();
 		try {
 			const result = await this.service.streamChat(request.id, this.selectedModel, context);
@@ -352,6 +382,7 @@ export class CloudCodeChatController extends Disposable {
 		this.view.setDraft('');
 		this.view.setError(undefined);
 		this.view.setMessages(this.messages);
+		this.renderConversations();
 		this.updateStatus();
 		const isCurrent = () => !this.disposed && this.activeAgent === request && request.conversation === this.agentConversation;
 		request.completion = (async () => {
@@ -526,28 +557,111 @@ export class CloudCodeChatController extends Disposable {
 		if (request) {
 			// Ignore subsequent deltas immediately, even while native cancellation is in flight.
 			this.finishResponse(true);
-			void this.service.cancelChat(request.id).catch(error => this.showError(error));
+			const conversationId = this.conversationId;
+			void this.service.cancelChat(request.id).catch(error => { if (this.conversationId === conversationId) { this.showError(error); } });
 		}
 	}
 
-	private newConversation(): void {
-		this.agentConversation++;
+	private resetConversation(): void {
 		this.stop();
+		this.agentConversation++;
+		if (this.hasPendingEdits()) {
+			this.messages.push({ role: 'assistant', text: localize('cloudcode.archivedEdits', "The unreviewed changes were discarded. Ask again to prepare a fresh diff.") });
+		}
 		this.clearEditProposals();
 		this.attachmentRevision++;
 		this.loadingAttachments = false;
+	}
+
+	private clearConversation(): void {
 		this.attachments = [];
 		this.historyHasAttachments = false;
-		this.view.setAttachments(this.attachments, false);
+		this.view.setAttachments([], false);
 		this.messages = [];
 		this.history = [];
-		this.view.setMessages(this.messages);
+		this.view.setMessages([]);
 		this.view.setDraft('');
 		this.view.setError(undefined);
 		this.updateStatus();
 	}
 
+	private newConversation(): void {
+		this.resetConversation();
+		this.saveConversations();
+		if (this.messages.length || this.attachments.length || this.view.getDraft()) {
+			this.conversationId = generateUuid();
+		}
+		this.clearConversation();
+		this.renderConversations();
+		this.saveScheduler.schedule();
+	}
+
+	private selectConversation(id: string): void {
+		if (id === this.conversationId || this.state.status !== 'signedIn') { return; }
+		const target = this.conversations.find(chat => chat.id === id);
+		if (!target) { return; }
+		this.resetConversation();
+		this.saveConversations();
+		this.restoreConversation(target);
+		this.renderConversations();
+		this.saveScheduler.schedule();
+	}
+
+	private restoreConversation(chat: ICloudCodeConversation): void {
+		this.conversationId = chat.id;
+		this.messages = [...chat.messages];
+		this.history = [...chat.history];
+		this.attachments = chat.attachments;
+		this.historyHasAttachments = this.history.some(message => message.images?.length) || this.messages.some(message => message.attachments?.length);
+		this.mode = chat.mode === 'agent' && !this.agent ? 'ask' : chat.mode;
+		this.selectedModel = this.models.length ? this.models.find(model => model.id === chat.model)?.id ?? this.models[0].id : chat.model;
+		this.view.setMessages(this.messages);
+		this.view.setAttachments(this.attachments, false);
+		this.view.setDraft(chat.draft);
+		this.view.setEditMode(this.mode);
+		this.view.setModels(this.models, this.selectedModel, this.loadingModels);
+		this.view.setError(undefined);
+		this.updateStatus();
+	}
+
+	private snapshotConversation(): ICloudCodeConversation {
+		const title = this.messages.find(message => message.role === 'user')?.text.replace(/\s+/g, ' ').trim().slice(0, 80)
+			|| this.view.getDraft().replace(/\s+/g, ' ').trim().slice(0, 80) || localize('cloudcode.newChat', "New Chat");
+		const unfinished = !!this.activeRequest || !!this.activeAgent && this.activeAgent.conversation === this.agentConversation && !this.activeAgent.source.token.isCancellationRequested;
+		const messages = this.messages.map((message, index) => {
+			const { progress, ...rest } = message;
+			return progress !== undefined || unfinished && index === this.messages.length - 1 ? { ...rest, text: this.activeRequest?.text || localize('cloudcode.interruptedChat', "This request was interrupted."), incomplete: true } : rest;
+		});
+		if (this.hasPendingEdits()) {
+			messages.push({ role: 'assistant', text: localize('cloudcode.archivedEdits', "The unreviewed changes were discarded. Ask again to prepare a fresh diff.") });
+		}
+		return { id: this.conversationId, title, messages, history: this.history, attachments: this.attachments, draft: this.view.getDraft(), mode: this.mode, model: this.selectedModel };
+	}
+
+	private renderConversations(): void {
+		const current = this.snapshotConversation();
+		const chats = this.conversations.some(chat => chat.id === current.id) ? this.conversations.map(chat => chat.id === current.id ? current : chat) : [...this.conversations, current];
+		this.view.setConversations(chats.map(chat => ({ id: chat.id, title: chat.title })), this.conversationId);
+	}
+
+	private saveConversations(): void {
+		this.saveScheduler.cancel();
+		if (this.state.status !== 'signedIn') { return; }
+		const current = this.snapshotConversation();
+		const index = this.conversations.findIndex(chat => chat.id === current.id);
+		if (index === -1) { this.conversations.push(current); } else { this.conversations[index] = current; }
+		try {
+			const serialized = serializeCloudCodeConversations({ conversations: this.conversations, activeId: this.conversationId });
+			const archive = parseCloudCodeConversations(serialized);
+			if (!archive) { throw new Error(localize('cloudcode.historyInvalid', "This conversation could not be saved.")); }
+			this.conversations = [...archive.conversations];
+			if (this.conversationScope) { this.conversationStorage?.write(this.conversationScope, serialized); }
+		} catch (error) { this.showError(error); }
+		this.renderConversations();
+	}
+
 	private updateStatus(): void {
+		if (!this.disposed) { this.saveScheduler.schedule(); }
 		this.view.setStatus(this.running ? 'running' : this.loadingModels || this.editBusy ? 'loading' : this.state.status === 'signedIn' && this.selectedModel ? 'ready' : 'disconnected');
 	}
 
@@ -571,6 +685,7 @@ export class CloudCodeChatController extends Disposable {
 		if (this.disposed) {
 			return;
 		}
+		this.saveConversations();
 		this.disposed = true;
 		this.agentConversation++;
 		this.activeAgent?.source.cancel();

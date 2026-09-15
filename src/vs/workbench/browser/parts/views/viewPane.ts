@@ -10,7 +10,7 @@ import { asCssVariable, foreground } from '../../../../platform/theme/common/col
 import { after, append, $, trackFocus, EventType, addDisposableListener, Dimension, reset, isAncestorOfActiveElement, isActiveElement } from '../../../../base/browser/dom.js';
 import { createCSSRule } from '../../../../base/browser/domStylesheets.js';
 import { asCssValueWithDefault, asCSSUrl } from '../../../../base/browser/cssValue.js';
-import { DisposableMap, DisposableStore, toDisposable } from '../../../../base/common/lifecycle.js';
+import { DisposableMap, DisposableStore, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { Action, IAction, IActionRunner } from '../../../../base/common/actions.js';
 import { ActionsOrientation, IActionViewItem, prepareActions } from '../../../../base/browser/ui/actionbar/actionbar.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
@@ -581,6 +581,9 @@ export abstract class ViewPane extends Pane implements IView {
 
 		return nls.localize('viewAccessibilityHelp', 'Use Alt+F1 for accessibility help {0}', title);
 	}
+
+	/** A single merged view may supply controls in place of the container title. */
+	renderTitleControl(_container: HTMLElement): IDisposable | undefined { return undefined; }
 
 	protected updateTitle(title: string): void {
 		const calculatedTitle = this.calculateTitle(title);

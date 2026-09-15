@@ -14,9 +14,18 @@ import { CloudCodeChatStatus, ICloudCodeChatMessage, ICloudCodeChatView } from '
 import { CloudCodeChatController } from '../../common/cloudCodeChatController.js';
 import { formatCloudCodePrompt, ICloudCodeAttachment, ICloudCodeContextProvider } from '../../common/cloudCodeChatContext.js';
 import { CloudCodeChatMode, ICloudCodeEditProposal, ICloudCodeEditProvider, ICloudCodeEditTarget, ICloudCodeProposedEdit } from '../../common/cloudCodeEdits.js';
+import { ICloudCodeConversationStorage } from '../../common/cloudCodeConversations.js';
 import { ICloudCodeAgent } from '../../common/cloudCodeAgent.js';
 
 class TestView extends Disposable implements ICloudCodeChatView {
+	readonly selectConversation = this._register(new Emitter<string>());
+	readonly onDidSelectConversation = this.selectConversation.event;
+	readonly changeDraft = this._register(new Emitter<void>());
+	readonly onDidChangeDraft = this.changeDraft.event;
+	chats: readonly { id: string; title: string }[] = [];
+	activeChat = '';
+	getDraft(): string { return this.draft; }
+	setConversations(chats: readonly { id: string; title: string }[], activeId: string): void { this.chats = chats; this.activeChat = activeId; }
 	readonly changeMode = this._register(new Emitter<CloudCodeChatMode>());
 	readonly onDidChangeMode = this.changeMode.event;
 	readonly reviewEdit = this._register(new Emitter<{ id: string; action: 'preview' | 'accept' | 'reject' }>());
@@ -171,7 +180,7 @@ suite('CloudCodeChatController', () => {
 		contextProvider = new TestContextProvider();
 		editProvider = new TestEditProvider();
 		agent = new TestAgent();
-		controller = disposables.add(new CloudCodeChatController(view, contextProvider, editProvider, agent, service));
+		controller = disposables.add(new CloudCodeChatController(view, contextProvider, editProvider, agent, undefined, service));
 		await controller.initialize();
 		// The shared cases below exercise explicitly selected Ask behavior.
 		view.changeMode.fire('ask');
@@ -206,9 +215,62 @@ suite('CloudCodeChatController', () => {
 		await settleEdits();
 	}
 
+	test('New Chat preserves messages, draft attachments and mode for switching back', async () => {
+		view.submit.fire('Review package.json');
+		const request = service.requests[0];
+		service.deltas.fire({ requestId: request.id, text: 'It defines the build scripts.' });
+		await request.result.complete({ cancelled: false });
+		await attach([editableAttachment]);
+		view.draft = 'Explain the scripts';
+		const firstId = view.activeChat;
+		view.newConversation.fire();
+		const secondId = view.activeChat;
+		assert.notStrictEqual(firstId, secondId);
+		view.draft = 'Another question';
+		view.selectConversation.fire(firstId);
+		assert.deepStrictEqual({ title: view.chats.find(chat => chat.id === firstId)?.title, draft: view.draft, mode: view.mode, attachments: view.attachments, messages: view.messages.map(message => message.text) }, {
+			title: 'Review package.json', draft: 'Explain the scripts', mode: 'ask', attachments: [editableAttachment], messages: ['Review package.json', 'It defines the build scripts.']
+		});
+		view.submit.fire('Continue');
+		assert.deepStrictEqual(service.requests[1].messages.slice(0, 2), [{ role: 'user', content: 'Review package.json' }, { role: 'assistant', content: 'It defines the build scripts.' }]);
+	});
+
+	test('switching away from a running chat freezes its partial response and ignores late deltas', async () => {
+		view.submit.fire('First');
+		const first = service.requests[0];
+		const firstId = view.activeChat;
+		service.deltas.fire({ requestId: first.id, text: 'Partial reply' });
+		view.newConversation.fire();
+		service.deltas.fire({ requestId: first.id, text: 'Must not appear' });
+		await first.result.complete({ cancelled: false });
+		view.selectConversation.fire(firstId);
+		assert.deepStrictEqual({ text: view.messages.at(-1)?.text, incomplete: view.messages.at(-1)?.incomplete, cancelled: service.cancelled }, { text: 'Partial reply', incomplete: true, cancelled: [first.id] });
+	});
+
+	test('history restores after reopening and remains isolated between accounts and teams', async () => {
+		controller.dispose();
+		const values = new Map<string, string>();
+		const storage: ICloudCodeConversationStorage = { scope: account => `${account.user.id}:${account.team.id}`, read: scope => values.get(scope), write: (scope, value) => { values.set(scope, value); } };
+		controller = disposables.add(new CloudCodeChatController(view, contextProvider, editProvider, agent, storage, service));
+		await controller.initialize();
+		view.changeMode.fire('ask');
+		view.submit.fire('Remember this chat');
+		service.deltas.fire({ requestId: service.requests[0].id, text: 'Saved answer' });
+		await service.requests[0].result.complete({ cancelled: false });
+		view.draft = 'Unsent follow-up';
+		controller.dispose();
+		controller = disposables.add(new CloudCodeChatController(view, contextProvider, editProvider, agent, storage, service));
+		await controller.initialize();
+		assert.deepStrictEqual({ draft: view.draft, mode: view.mode, text: view.messages.at(-1)?.text }, { draft: 'Unsent follow-up', mode: 'ask', text: 'Saved answer' });
+		service.stateEmitter.fire({ ...signedIn, account: { ...signedIn.account!, team: { id: 2, name: 'Another team' } } });
+		assert.deepStrictEqual({ messages: view.messages, draft: view.draft, titles: view.chats.map(chat => chat.title) }, { messages: [], draft: '', titles: ['New Chat'] });
+		service.stateEmitter.fire(signedIn);
+		assert.strictEqual(view.messages.at(-1)?.text, 'Saved answer');
+	});
+
 	test('Agent is the initial mode and dispatches project questions without a mode change', async () => {
 		controller.dispose();
-		controller = disposables.add(new CloudCodeChatController(view, contextProvider, editProvider, agent, service));
+		controller = disposables.add(new CloudCodeChatController(view, contextProvider, editProvider, agent, undefined, service));
 		await controller.initialize();
 		const prompt = 'C:\\code\\cloudcode\\package.json — review the dependency versions';
 		view.submit.fire(prompt);
@@ -221,7 +283,7 @@ suite('CloudCodeChatController', () => {
 
 	test('Ask remains available when the window has no Agent implementation', async () => {
 		controller.dispose();
-		controller = disposables.add(new CloudCodeChatController(view, contextProvider, editProvider, undefined, service));
+		controller = disposables.add(new CloudCodeChatController(view, contextProvider, editProvider, undefined, undefined, service));
 		await controller.initialize();
 		view.submit.fire('Explain this');
 		assert.deepStrictEqual({ mode: view.mode, messages: service.requests[0]?.messages, agentRequests: agent.requests.length }, {
@@ -461,6 +523,25 @@ suite('CloudCodeChatController', () => {
 		await result.complete([{ id: 'file', label: 'file.ts', content: 'read result' }]);
 		await Promise.resolve();
 		assert.strictEqual(view.loadingAttachments, false);
+	});
+
+	test('switching back during Agent work restores the old chat and ignores the late result', async () => {
+		view.changeMode.fire('agent');
+		view.submit.fire('First task');
+		await agent.requests[0].result.complete({ text: 'First answer', attachments: [], edits: [] });
+		await settleEdits();
+		const firstId = view.activeChat;
+		view.newConversation.fire();
+		view.submit.fire('Second task');
+		const secondId = view.activeChat;
+		const request = agent.requests[1];
+		view.selectConversation.fire(firstId);
+		request.onProgress('Late progress');
+		await request.result.complete({ text: 'Late answer', attachments: [], edits: [] });
+		await settleEdits();
+		assert.deepStrictEqual({ text: view.messages.at(-1)?.text, cancelled: request.token.isCancellationRequested }, { text: 'First answer', cancelled: true });
+		view.selectConversation.fire(secondId);
+		assert.deepStrictEqual({ text: view.messages.at(-1)?.text, incomplete: view.messages.at(-1)?.incomplete }, { text: 'Agent stopped. No changes were applied.', incomplete: true });
 	});
 
 	for (const reset of ['newChat', 'accountChange', 'signOut', 'dispose'] as const) {
