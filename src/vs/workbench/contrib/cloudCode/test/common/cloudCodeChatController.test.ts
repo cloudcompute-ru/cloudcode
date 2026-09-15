@@ -173,6 +173,8 @@ suite('CloudCodeChatController', () => {
 		agent = new TestAgent();
 		controller = disposables.add(new CloudCodeChatController(view, contextProvider, editProvider, agent, service));
 		await controller.initialize();
+		// The shared cases below exercise explicitly selected Ask behavior.
+		view.changeMode.fire('ask');
 	});
 
 	async function attach(attachments: readonly ICloudCodeAttachment[]): Promise<void> {
@@ -203,6 +205,40 @@ suite('CloudCodeChatController', () => {
 		await request.result.complete({ cancelled: false });
 		await settleEdits();
 	}
+
+	test('Agent is the initial mode and dispatches project questions without a mode change', async () => {
+		controller.dispose();
+		controller = disposables.add(new CloudCodeChatController(view, contextProvider, editProvider, agent, service));
+		await controller.initialize();
+		const prompt = 'C:\\code\\cloudcode\\package.json — review the dependency versions';
+		view.submit.fire(prompt);
+		assert.deepStrictEqual({ mode: view.mode, prompt: agent.requests[0]?.prompt, nativeRequests: service.requests.length, text: view.messages.at(-1)?.text, progress: view.messages.at(-1)?.progress }, {
+			mode: 'agent', prompt, nativeRequests: 0, text: '', progress: 'Exploring your project…'
+		});
+		await agent.requests[0].result.complete({ text: 'Reviewed the file.', attachments: [], edits: [] });
+		await settleEdits();
+	});
+
+	test('Ask remains available when the window has no Agent implementation', async () => {
+		controller.dispose();
+		controller = disposables.add(new CloudCodeChatController(view, contextProvider, editProvider, undefined, service));
+		await controller.initialize();
+		view.submit.fire('Explain this');
+		assert.deepStrictEqual({ mode: view.mode, messages: service.requests[0]?.messages, agentRequests: agent.requests.length }, {
+			mode: 'ask', messages: [{ role: 'user', content: 'Explain this' }], agentRequests: 0
+		});
+	});
+
+	test('an explicit Ask choice survives New Chat and account updates and does not resolve typed paths', async () => {
+		view.newConversation.fire();
+		service.stateEmitter.fire({ ...signedIn, account: { ...signedIn.account!, team: { id: 2, name: 'Other team' } } });
+		await settleEdits();
+		const prompt = 'C:\\code\\cloudcode\\package.json — explain this file';
+		view.submit.fire(prompt);
+		assert.deepStrictEqual({ mode: view.mode, messages: service.requests[0]?.messages, agentRequests: agent.requests.length, attachments: view.attachments }, {
+			mode: 'ask', messages: [{ role: 'user', content: prompt }], agentRequests: 0, attachments: []
+		});
+	});
 
 	test('pasted images are retained in follow-up requests and cleared by New Chat', async () => {
 		const attachment = { id: 'screenshot', label: 'Screenshot.png', content: '', image: { dataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aM1sAAAAASUVORK5CYII=' } };
@@ -656,7 +692,7 @@ suite('CloudCodeChatController', () => {
 		assert.deepStrictEqual(service.requests[2].messages, [{ role: 'user', content: 'Start a fresh discussion' }]);
 	});
 
-	test('Agent mode explores without attachments and presents progress without exposing protocol responses', async () => {
+		test('Agent mode explores without attachments and presents progress without exposing protocol responses', async () => {
 		view.changeMode.fire('agent');
 		view.submit.fire('Find the sign-in handler');
 		const request = agent.requests[0];
@@ -664,15 +700,17 @@ suite('CloudCodeChatController', () => {
 		request.onProgress('Reading auth.ts');
 		assert.deepStrictEqual({
 			prompt: request.prompt, attachments: request.attachments, model: request.model,
-			status: view.status, requests: service.requests.length, activity: view.messages.at(-1)?.activity
+			status: view.status, requests: service.requests.length, activity: view.messages.at(-1)?.activity,
+			text: view.messages.at(-1)?.text, progress: view.messages.at(-1)?.progress
 		}, {
 			prompt: 'Find the sign-in handler', attachments: [], model: 'model',
-			status: 'running', requests: 0, activity: ['Searching for sign-in', 'Reading auth.ts']
+			status: 'running', requests: 0, activity: ['Searching for sign-in', 'Reading auth.ts'],
+			text: '', progress: 'Reading auth.ts'
 		});
 		await request.result.complete({ text: 'The handler is in auth.ts.', attachments: [editableAttachment], edits: [] });
 		await settleEdits();
-		assert.deepStrictEqual({ text: view.messages.at(-1)?.text, attachments: view.messages.at(-1)?.attachments, status: view.status, proposals: view.proposals }, {
-			text: 'The handler is in auth.ts.', attachments: [editableAttachment], status: 'ready', proposals: []
+		assert.deepStrictEqual({ text: view.messages.at(-1)?.text, progress: view.messages.at(-1)?.progress, attachments: view.messages.at(-1)?.attachments, status: view.status, proposals: view.proposals }, {
+			text: 'The handler is in auth.ts.', progress: undefined, attachments: [editableAttachment], status: 'ready', proposals: []
 		});
 	});
 
@@ -720,12 +758,12 @@ suite('CloudCodeChatController', () => {
 		view.stop.fire();
 		request.onProgress('This late progress must be ignored');
 		view.submit.fire('Too early');
-		assert.deepStrictEqual({ cancelled: request.token.isCancellationRequested, requests: agent.requests.length, activity: view.messages.at(-1)?.activity }, {
-			cancelled: true, requests: 1, activity: ['Reading main.ts']
+		assert.deepStrictEqual({ cancelled: request.token.isCancellationRequested, requests: agent.requests.length, activity: view.messages.at(-1)?.activity, text: view.messages.at(-1)?.text, progress: view.messages.at(-1)?.progress }, {
+			cancelled: true, requests: 1, activity: ['Reading main.ts'], text: 'Agent stopped. No changes were applied.', progress: undefined
 		});
 		await request.result.complete({ text: 'Late answer', attachments: [editableAttachment], edits: [{ target: { token: 'late', attachment: editableAttachment }, replacement: 'late edit' }] });
 		await settleEdits();
-		assert.deepStrictEqual({ proposals: view.proposals, incomplete: view.messages.at(-1)?.incomplete, status: view.status }, { proposals: [], incomplete: true, status: 'ready' });
+		assert.deepStrictEqual({ proposals: view.proposals, incomplete: view.messages.at(-1)?.incomplete, progress: view.messages.at(-1)?.progress, status: view.status }, { proposals: [], incomplete: true, progress: undefined, status: 'ready' });
 		view.changeMode.fire('ask');
 		view.submit.fire('Fresh question');
 		assert.deepStrictEqual(service.requests[0].messages, [{ role: 'user', content: 'Fresh question' }]);
@@ -759,8 +797,8 @@ suite('CloudCodeChatController', () => {
 		request.onProgress('Reading auth.ts');
 		await request.result.error(new Error('The workspace changed'));
 		await settleEdits();
-		assert.deepStrictEqual({ error: view.error, incomplete: view.messages.at(-1)?.incomplete, proposals: view.proposals, status: view.status }, {
-			error: 'The workspace changed', incomplete: true, proposals: [], status: 'ready'
+		assert.deepStrictEqual({ error: view.error, incomplete: view.messages.at(-1)?.incomplete, progress: view.messages.at(-1)?.progress, proposals: view.proposals, status: view.status }, {
+			error: 'The workspace changed', incomplete: true, progress: undefined, proposals: [], status: 'ready'
 		});
 		view.changeMode.fire('ask');
 		view.submit.fire('Next question');

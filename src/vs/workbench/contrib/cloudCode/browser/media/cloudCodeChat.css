@@ -122,6 +122,65 @@
 	font-size: var(--vscode-fontSize-body2);
 }
 
+.cloudcode-chat .cloudcode-chat-thinking {
+	display: flex;
+	align-items: baseline;
+	gap: var(--vscode-spacing-size40);
+	color: var(--vscode-descriptionForeground);
+}
+
+.cloudcode-chat .cloudcode-chat-thinking-label {
+	background: linear-gradient(90deg,
+		var(--vscode-descriptionForeground) 30%,
+		var(--vscode-chat-thinkingShimmer, var(--vscode-foreground)) 50%,
+		var(--vscode-descriptionForeground) 70%);
+	background-size: 300% 100%;
+	background-clip: text;
+	-webkit-text-fill-color: transparent;
+	animation: cloudcode-thinking-shimmer 2s linear infinite;
+}
+
+.cloudcode-chat .cloudcode-chat-thinking-dots {
+	flex-shrink: 0;
+}
+
+.cloudcode-chat .cloudcode-chat-thinking-dots span {
+	display: inline-block;
+	animation: cloudcode-thinking-dot 1.2s ease-in-out infinite;
+}
+
+.cloudcode-chat .cloudcode-chat-thinking-dots span:nth-child(2) {
+	animation-delay: 0.2s;
+}
+
+.cloudcode-chat .cloudcode-chat-thinking-dots span:nth-child(3) {
+	animation-delay: 0.4s;
+}
+
+@keyframes cloudcode-thinking-shimmer {
+	from { background-position: 100% 0; }
+	to { background-position: -100% 0; }
+}
+
+@keyframes cloudcode-thinking-dot {
+	0%, 60%, 100% { opacity: 0.35; transform: translateY(0); }
+	30% { opacity: 1; transform: translateY(-0.12em); }
+}
+
+:is(.monaco-reduce-motion, .hc-black, .hc-light) .cloudcode-chat :is(.cloudcode-chat-thinking-label, .cloudcode-chat-thinking-dots span) {
+	animation: none;
+	background: none;
+	-webkit-text-fill-color: currentColor;
+}
+
+@media (prefers-reduced-motion: reduce), (forced-colors: active) {
+	.cloudcode-chat :is(.cloudcode-chat-thinking-label, .cloudcode-chat-thinking-dots span) {
+		animation: none;
+		background: none;
+		-webkit-text-fill-color: currentColor;
+	}
+}
+
 .cloudcode-chat .cloudcode-chat-composer {
 	flex: 0 0 auto;
 	margin: var(--vscode-spacing-size120);

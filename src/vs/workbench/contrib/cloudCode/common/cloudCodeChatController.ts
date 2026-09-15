@@ -30,7 +30,7 @@ export class CloudCodeChatController extends Disposable {
 	private attachmentRevision = 0;
 	private loadingAttachments = false;
 	private historyHasAttachments = false;
-	private mode: CloudCodeChatMode = 'ask';
+	private mode: CloudCodeChatMode;
 	private editProposals: readonly ICloudCodeEditProposal[] = [];
 	private editBusy = false;
 	private editRevision = 0;
@@ -48,6 +48,7 @@ export class CloudCodeChatController extends Disposable {
 		@ICloudCodeService private readonly service: ICloudCodeService,
 	) {
 		super();
+		this.mode = agent ? 'agent' : 'ask';
 		this._register(service.onDidChangeState(state => {
 			this.revision++;
 			this.applyState(state);
@@ -307,7 +308,7 @@ export class CloudCodeChatController extends Disposable {
 		}
 		const request = { id: generateUuid(), message, text: '', hasAttachments: this.attachments.length > 0, targets };
 		this.activeRequest = request;
-		this.messages.push({ role: 'user', text: prompt, attachments: this.attachments }, { role: 'assistant', text: targets ? localize('cloudcode.preparingEdits', "Preparing proposed changes…") : '' });
+		this.messages.push({ role: 'user', text: prompt, attachments: this.attachments }, { role: 'assistant', text: '', progress: targets ? localize('cloudcode.preparingEdits', "Preparing proposed changes…") : undefined });
 		this.view.setDraft('');
 		this.attachments = [];
 		this.view.setAttachments(this.attachments, false);
@@ -343,7 +344,7 @@ export class CloudCodeChatController extends Disposable {
 		this.activeAgent = request;
 		const attachments = this.attachments;
 		const responseIndex = this.messages.length + 1;
-		this.messages.push({ role: 'user', text: prompt, attachments }, { role: 'assistant', text: localize('cloudcode.agentStarting', "Exploring your project…") });
+		this.messages.push({ role: 'user', text: prompt, attachments }, { role: 'assistant', text: '', progress: localize('cloudcode.agentStarting', "Exploring your project…") });
 		this.attachments = [];
 		this.history = [];
 		this.historyHasAttachments = false;
@@ -360,7 +361,7 @@ export class CloudCodeChatController extends Disposable {
 						return;
 					}
 					request.activity.push(message);
-					this.messages[responseIndex] = { role: 'assistant', text: message, activity: [...request.activity] };
+					this.messages[responseIndex] = { role: 'assistant', text: '', progress: message, activity: [...request.activity] };
 					this.view.setMessages(this.messages);
 				});
 				if (!isCurrent()) {
@@ -511,6 +512,15 @@ export class CloudCodeChatController extends Disposable {
 		if (this.activeAgent) {
 			this.activeAgent.source.cancel();
 			this.editProvider?.clear();
+			if (this.activeAgent.conversation === this.agentConversation) {
+				this.messages[this.messages.length - 1] = {
+					role: 'assistant',
+					text: localize('cloudcode.agentStopped', "Agent stopped. No changes were applied."),
+					incomplete: true,
+					activity: [...this.activeAgent.activity]
+				};
+				this.view.setMessages(this.messages);
+			}
 		}
 		const request = this.activeRequest;
 		if (request) {

@@ -46,7 +46,7 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 	private readonly modelPicker: HTMLElement;
 	private readonly modelButton: Button;
 	private readonly modeButton: Button;
-	private mode: CloudCodeChatMode = 'ask';
+	private mode: CloudCodeChatMode = 'agent';
 	private readonly proposalsNode: HTMLElement;
 	private readonly proposalHint: HTMLElement;
 	private readonly proposalList: HTMLElement;
@@ -59,6 +59,8 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 	private readonly retryModelsButton: Button;
 	private readonly errorLabel: HTMLElement;
 	private responseText: Text | undefined;
+	private responseBody: HTMLElement | undefined;
+	private thinkingNode: HTMLElement | undefined;
 	private state: ICloudCodeState = { status: 'signedOut' };
 	private loadingModels = false;
 	private status: CloudCodeChatStatus = 'disconnected';
@@ -269,7 +271,7 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 				this.selectModelEmitter.fire(selected);
 			}
 		}));
-		this.setEditMode('ask');
+		this.setEditMode(this.mode);
 		this.setAttachments([], false);
 		this.setSession(this.state);
 		this.setModels([], undefined, false);
@@ -431,6 +433,8 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 		const wasAtBottom = this.conversation.scrollHeight - this.conversation.scrollTop - this.conversation.clientHeight < 20;
 		dom.clearNode(this.messages);
 		this.responseText = undefined;
+		this.responseBody = undefined;
+		this.thinkingNode = undefined;
 		this.emptyState.hidden = messages.length > 0;
 		for (const message of messages) {
 			const row = dom.append(this.messages, dom.$('.cloudcode-chat-message'));
@@ -446,16 +450,27 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 				dom.append(activity, dom.$('summary')).textContent = localize('cloudcode.agentActivity', "Agent Activity");
 				dom.append(activity, dom.$('pre')).textContent = message.activity.join('\n');
 			}
+			if (message === messages.at(-1) && message.role === 'assistant' && !message.incomplete && (!message.text.trim() || message.progress)) {
+				this.thinkingNode = dom.append(row, dom.$('p.cloudcode-chat-thinking', { role: 'status', 'aria-label': message.progress || localize('cloudcode.thinking', "Thinking") }));
+				const label = dom.append(this.thinkingNode, dom.$('span.cloudcode-chat-thinking-label', { 'aria-hidden': 'true' }));
+				label.textContent = (message.progress || localize('cloudcode.thinking', "Thinking")).replaceAll('…', '');
+				const dots = dom.append(this.thinkingNode, dom.$('span.cloudcode-chat-thinking-dots', { 'aria-hidden': 'true' }));
+				for (let index = 0; index < 3; index++) {
+					dom.append(dots, dom.$('span')).textContent = '.';
+				}
+			}
 			const body = dom.append(row, dom.$('p'));
 			const text = body.ownerDocument.createTextNode(message.text);
 			body.appendChild(text);
 			if (message.role === 'assistant') {
 				this.responseText = text;
+				this.responseBody = body;
 			}
 			if (message.incomplete) {
 				dom.append(row, dom.$('p.cloudcode-chat-incomplete')).textContent = localize('cloudcode.incomplete', "Response incomplete. This question and response will not be included in the next message.");
 			}
 		}
+		this.updateThinking();
 		if (wasAtBottom) {
 			this.conversation.scrollTop = this.conversation.scrollHeight;
 		}
@@ -465,8 +480,19 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 	appendResponse(text: string): void {
 		const wasAtBottom = this.conversation.scrollHeight - this.conversation.scrollTop - this.conversation.clientHeight < 20;
 		this.responseText?.appendData(text);
+		this.updateThinking();
 		if (wasAtBottom) {
 			this.conversation.scrollTop = this.conversation.scrollHeight;
+		}
+	}
+
+	private updateThinking(): void {
+		const thinking = this.status === 'running' && !!this.thinkingNode && !this.responseText?.data.trim();
+		if (this.thinkingNode) {
+			this.thinkingNode.hidden = !thinking;
+		}
+		if (this.responseBody) {
+			this.responseBody.hidden = thinking;
 		}
 	}
 
@@ -484,6 +510,7 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 	/** Updates visual state only; this never starts or cancels inference. */
 	setStatus(status: CloudCodeChatStatus): void {
 		this.status = status;
+		this.updateThinking();
 		this.domNode.classList.toggle('running', status === 'running');
 		this.statusLabel.textContent = status === 'running'
 			? localize('cloudcode.working', "Working…")

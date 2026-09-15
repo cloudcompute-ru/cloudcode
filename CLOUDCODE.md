@@ -64,14 +64,16 @@ Local and remote text files and raster images are supported. Images are sent as 
 
 ## Explore a project with Agent mode
 
-1. Open a trusted project and select **Agent** beside the model selector.
+1. Open a trusted project. **Agent** is the default mode beside the model selector; choosing another mode keeps that choice for subsequent messages and New Chat in the same window.
 2. Describe a question or change. Attaching an initial file or selection is optional.
-3. Follow the progress in the chat and expand **Agent Activity** to inspect the actions taken. The model can list directories, find filenames, search literal text and read files or line ranges across the opened workspace folders.
+3. Follow the animated thinking indicator in the chat and expand **Agent Activity** to inspect the actions taken. The indicator displays the current activity while waiting for an answer, and stops when the answer arrives, the request fails, or you press **Stop**. Reduced-motion settings disable its animation. The model can list directories, find filenames, search literal text and read files or line ranges across the opened workspace folders.
 4. Read the answer or review proposed changes with **Preview Diff**, then **Accept** or **Reject** for each file. Agent mode never applies a change automatically.
 
 Automatic discovery respects search exclusions and ignore files, including global and parent ignore files. It also excludes common generated directories, secret files and symbolic links. These filters are safeguards, not a guarantee that ordinary source files contain no sensitive information. Relevant search snippets and file contents are sent through the existing CloudCompute inference connection. Reads use unsaved text when the file is open. Local and remote workspaces are supported; trust loss or a workspace-folder change invalidates the active task.
 
 Each task starts with the current instruction and attached snapshots, independently of earlier chat. It is limited to 12 model calls and three minutes. Reads are bounded to 16 KiB, line-range reads to 200 lines, and retained snapshots to five files/selections and 24 KiB combined. Search results and total model context are also bounded. The final response exposes retained snapshots as expandable attachments. A successful answer can be followed up in Ask mode; a new Agent task explores afresh.
+
+**Ask** answers from messages and explicitly attached content, without searching the project or proposing changes. Typing a file path into Ask does not attach or read it: use **Attach…**, paste a copied file, drag it from Explorer, or choose **Agent** to find and read it. Agent can inspect dependency declarations in `package.json`; it has no internet lookup tool to verify the latest published versions.
 
 **Stop** cancels exploration and the active desktop inference request. No further tools or edits are accepted from that task. New Chat and account changes also invalidate its results. Provider generation and billing may continue as described above. Stopped or failed tasks produce no actionable edits.
 
@@ -80,7 +82,7 @@ Agent mode uses the existing chat endpoint without a backend change. The model m
 ## Propose and review code changes
 
 1. Attach the file or selected code you want to change. Use one attachment per file for an edit request.
-2. Switch **Ask** to **Propose Edits** beside the model selector, describe the change and send.
+2. Choose **Propose Edits** beside the model selector, describe the change and send.
 3. Choose **Preview Diff** for a proposed change. The native diff shows the captured file and the proposed result, including surrounding code for a selection.
 4. Choose **Accept** or **Reject** for each file. Accept becomes available after its diff opens successfully. Resolve the proposed changes before sending another request.
 

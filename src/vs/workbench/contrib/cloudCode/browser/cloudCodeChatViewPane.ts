@@ -80,8 +80,8 @@ export class CloudCodeChatViewPane extends ViewPane {
 			return picked?.id;
 		}, async mode => {
 			const items: { id: CloudCodeChatMode; label: string; description: string }[] = [
-				{ id: 'ask', label: localize('cloudcode.askMode', "Ask"), description: localize('cloudcode.askModeDetail', "Chat using messages and attachments") },
 				{ id: 'agent', label: localize('cloudcode.agentMode', "Agent"), description: localize('cloudcode.agentModeDetail', "Search the project, read files, and propose changes") },
+				{ id: 'ask', label: localize('cloudcode.askMode', "Ask"), description: localize('cloudcode.askModeDetail', "Answer using messages and attached content; no project search or edits") },
 				{ id: 'edit', label: localize('cloudcode.proposeEdits', "Propose Edits"), description: localize('cloudcode.editModeDetail', "Change only the files or selections you attach") },
 			];
 			const picked = await this.quickInputService.pick(items, { placeHolder: localize('cloudcode.chatMode', "Choose a chat mode"), activeItem: items.find(item => item.id === mode) });

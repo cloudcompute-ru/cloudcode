@@ -23,6 +23,68 @@ import { CloudCodeChatWidget } from '../../browser/cloudCodeChatWidget.js';
 import { CloudCodeContext } from '../../browser/cloudCodeContext.js';
 import { ICloudCodeAttachment, mergeCloudCodeAttachments } from '../../common/cloudCodeChatContext.js';
 
+suite('CloudCodeChatWidget thinking state', () => {
+	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
+	let widget: CloudCodeChatWidget;
+
+	setup(() => {
+		const parent = document.createElement('div');
+		document.body.appendChild(parent);
+		disposables.add(toDisposable(() => parent.remove()));
+		widget = disposables.add(new CloudCodeChatWidget(parent));
+		widget.setSession({ status: 'signedIn' });
+		widget.setModels([{ id: 'model', name: 'Model' }], 'model', false);
+		widget.setStatus('ready');
+	});
+
+	test('starts in Agent mode', () => {
+		assert.strictEqual(widget.domNode.querySelector('.cloudcode-chat-mode')?.textContent, 'Agent');
+	});
+
+	test('shows thinking until the first answer text while preserving the streamed text node', () => {
+		widget.setMessages([{ role: 'user', text: 'Review package.json' }, { role: 'assistant', text: '' }]);
+		const thinking = widget.domNode.querySelector<HTMLElement>('.cloudcode-chat-thinking')!;
+		assert.strictEqual(thinking.hidden, true);
+		widget.setStatus('running');
+		assert.deepStrictEqual({ hidden: thinking.hidden, label: thinking.getAttribute('aria-label'), dots: thinking.querySelectorAll('.cloudcode-chat-thinking-dots span').length }, {
+			hidden: false, label: 'Thinking', dots: 3
+		});
+		widget.appendResponse(' ');
+		assert.strictEqual(thinking.hidden, false);
+		widget.appendResponse('This project');
+		const body = thinking.nextElementSibling!;
+		const text = body.firstChild;
+		widget.appendResponse(' uses TypeScript.');
+		assert.deepStrictEqual({ hidden: thinking.hidden, content: body.textContent, sameNode: text === body.firstChild }, {
+			hidden: true, content: ' This project uses TypeScript.', sameNode: true
+		});
+	});
+
+	test('renders Agent activity as progress and removes it when the answer arrives', () => {
+		widget.setStatus('running');
+		widget.setMessages([{ role: 'assistant', text: '', progress: 'Reading package.json' }]);
+		const thinking = widget.domNode.querySelector<HTMLElement>('.cloudcode-chat-thinking')!;
+		assert.deepStrictEqual({ hidden: thinking.hidden, label: thinking.getAttribute('aria-label') }, { hidden: false, label: 'Reading package.json' });
+		widget.setMessages([{ role: 'assistant', text: 'The file contains three scripts.' }]);
+		widget.setStatus('ready');
+		assert.strictEqual(widget.domNode.querySelector('.cloudcode-chat-thinking'), null);
+	});
+
+	test('does not leave thinking active after stopping, errors, or clearing the conversation', () => {
+		widget.setMessages([{ role: 'assistant', text: '' }]);
+		widget.setStatus('running');
+		widget.setStatus('ready');
+		assert.strictEqual(widget.domNode.querySelector<HTMLElement>('.cloudcode-chat-thinking')?.hidden, true);
+		widget.setMessages([{ role: 'assistant', text: '', progress: 'Reading a file', incomplete: true }]);
+		widget.setStatus('running');
+		assert.strictEqual(widget.domNode.querySelector('.cloudcode-chat-thinking'), null);
+		widget.setError('Request failed');
+		widget.setStatus('ready');
+		widget.setMessages([]);
+		assert.strictEqual(widget.domNode.querySelector('.cloudcode-chat-thinking'), null);
+	});
+});
+
 suite('CloudCodeChatWidget attachments', () => {
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
 	const resource = URI.file('/project/unsaved.ts');
