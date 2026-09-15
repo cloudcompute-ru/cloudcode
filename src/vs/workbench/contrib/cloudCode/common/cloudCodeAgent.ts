@@ -10,7 +10,7 @@ import { DisposableStore, IDisposable, toDisposable } from '../../../../base/com
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { localize } from '../../../../nls.js';
 import { CLOUDCODE_MAX_CONTEXT_BYTES, CLOUDCODE_MAX_MESSAGE_LENGTH, ICloudCodeMessage, ICloudCodeService } from '../../../../platform/cloudCode/common/cloudCode.js';
-import { ICloudCodeAttachment, mergeCloudCodeAttachments } from './cloudCodeChatContext.js';
+import { cloudCodeUserMessage, ICloudCodeAttachment, mergeCloudCodeAttachments } from './cloudCodeChatContext.js';
 import { ICloudCodeEditProvider, ICloudCodeProposedEdit, parseCloudCodeEdits } from './cloudCodeEdits.js';
 
 const maxModelCalls = 12;
@@ -156,7 +156,7 @@ function createMessages(prompt: string, roots: ICloudCodeAgentWorkspaceSession['
 		'{"action":"answer","text":"your answer"}',
 		'{"action":"propose","edits":[{"attachment":1,"replacement":"complete replacement text"}]}',
 		'For read, omit both line fields to read the whole file or provide both startLine and endLine as positive line numbers. Use only root ids listed below and slash-separated relative paths. Do not add fields. Queries are limited to 200 characters.',
-		'Only numbered snapshots may be edited; search snippets are not editable. A snapshot is exactly its file or selected section: replace its entire content and preserve unrelated code. No new files, patches, abbreviated code or filenames in edits. Use each attachment number once at most. Return an empty edits array if no change is needed.',
+		'Images are visual reference material only and cannot be edited. Only numbered text snapshots may be edited; search snippets are not editable. A snapshot is exactly its file or selected section: replace its entire content and preserve unrelated code. No new files, patches, abbreviated code or filenames in edits. Use each attachment number once at most. Return an empty edits array if no change is needed.',
 		'At most 5 snapshots, 16 KiB per snapshot, 24 KiB together. Reading the same file replaces its snapshot at the same number, including its range. Each replacement is at most 32 KiB, all replacements 48 KiB. Choose smaller sections when necessary.',
 		'Use the last remaining model call to answer or propose. Report limitations honestly if you cannot finish. This task has no earlier conversation history.',
 		'Current task data:'
@@ -168,11 +168,11 @@ function createMessages(prompt: string, roots: ICloudCodeAgentWorkspaceSession['
 			remainingCalls,
 			roots: roots.map(root => ({ id: root.id, name: sanitizeLabel(root.name, 160) })),
 			toolResults: entries,
-			snapshots: attachments.map((attachment, index) => ({ attachment: index + 1, path: sanitizeLabel(attachment.label, 1024), language: attachment.languageId, startLine: attachment.startLine, endLine: attachment.endLine, content: attachment.content }))
+			snapshots: attachments.filter(attachment => !attachment.image).map((attachment, index) => ({ attachment: index + 1, path: sanitizeLabel(attachment.label, 1024), language: attachment.languageId, startLine: attachment.startLine, endLine: attachment.endLine, content: attachment.content }))
 		};
 		const content = instructions + '\n' + JSON.stringify(data);
 		if (content.length <= CLOUDCODE_MAX_MESSAGE_LENGTH && new TextEncoder().encode(content).byteLength <= CLOUDCODE_MAX_CONTEXT_BYTES) {
-			return [{ role: 'user', content }];
+			return [cloudCodeUserMessage(content, attachments)];
 		}
 		if (!entries.length) {
 			throw contextTooLarge();
@@ -231,7 +231,7 @@ export class CloudCodeAgent implements ICloudCodeAgent {
 				}
 				if (action.action === 'propose') {
 					// Validate all edits before resolving any local resource, then prepare only their targets.
-					const proposals = parseCloudCodeEdits(action.response, snapshots.map(attachment => ({ token: '', attachment })));
+					const proposals = parseCloudCodeEdits(action.response, snapshots.filter(attachment => !attachment.image).map(attachment => ({ token: '', attachment })));
 					if (!proposals.length) {
 						return { text: localize('cloudCode.agent.noChanges', "No changes were proposed."), attachments: snapshots, edits: [] };
 					}

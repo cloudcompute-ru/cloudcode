@@ -3,6 +3,8 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { ICloudCodeImage } from './cloudCodeImages.js';
+import { localize } from '../../../nls.js';
 import { Event } from '../../../base/common/event.js';
 import { createDecorator } from '../../instantiation/common/instantiation.js';
 
@@ -29,11 +31,13 @@ export interface ICloudCodeState {
 export interface ICloudCodeModel {
 	readonly id: string;
 	readonly name: string;
+	readonly supportsImages?: boolean;
 }
 
 export interface ICloudCodeMessage {
 	readonly role: 'user' | 'assistant';
 	readonly content: string;
+	readonly images?: readonly ICloudCodeImage[];
 }
 
 export interface ICloudCodeChatDelta {
@@ -53,4 +57,13 @@ export interface ICloudCodeService {
 	getModels(): Promise<readonly ICloudCodeModel[]>;
 	streamChat(requestId: string, model: string, messages: readonly ICloudCodeMessage[]): Promise<{ cancelled: boolean }>;
 	cancelChat(requestId: string): Promise<void>;
+}
+
+export function cloudCodeOrigin(value: string): string {
+	const url = new URL(value);
+	const loopback = url.hostname === '127.0.0.1' || url.hostname === '[::1]' || url.hostname === 'localhost';
+	if ((url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) || url.username || url.password || url.search || url.hash || url.pathname !== '/') {
+		throw new Error(localize('cloudcode.serverUrlInvalid', "The CloudCode server must be an HTTPS origin. HTTP is supported only for local development."));
+	}
+	return url.origin;
 }

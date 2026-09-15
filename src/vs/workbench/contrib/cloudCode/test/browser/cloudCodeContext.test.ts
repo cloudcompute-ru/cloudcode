@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
+import { decodeBase64, VSBuffer } from '../../../../../base/common/buffer.js';
 import { DeferredPromise } from '../../../../../base/common/async.js';
 import { isEqualOrParent } from '../../../../../base/common/resources.js';
 import { URI } from '../../../../../base/common/uri.js';
@@ -16,7 +17,7 @@ import { ITextModel } from '../../../../../editor/common/model.js';
 import { IModelService } from '../../../../../editor/common/services/model.js';
 import { createTextModel } from '../../../../../editor/test/common/testTextModel.js';
 import { IFileDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
-import { FileOperationError, FileOperationResult, IFileService, IFileStatWithPartialMetadata } from '../../../../../platform/files/common/files.js';
+import { FileOperationError, FileOperationResult, IFileContent, IFileService, IFileStatWithPartialMetadata } from '../../../../../platform/files/common/files.js';
 import { IWorkspace, IWorkspaceContextService, toWorkspaceFolder } from '../../../../../platform/workspace/common/workspace.js';
 import { IWorkspaceTrustManagementService } from '../../../../../platform/workspace/common/workspaceTrust.js';
 import { IEditorService } from '../../../../services/editor/common/editorService.js';
@@ -73,7 +74,7 @@ suite('CloudCodeContext', () => {
 				}
 				return readResult ?? upcastPartial<ITextFileContent>({ value: diskContent });
 			} }),
-			upcastPartial<IFileService>({ stat: async uri => {
+			upcastPartial<IFileService>({ readFile: async () => upcastPartial<IFileContent>({ value: VSBuffer.wrap(decodeBase64('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aM1sAAAAASUVORK5CYII=').buffer) }), stat: async uri => {
 				stats.push(uri);
 				return upcastPartial<IFileStatWithPartialMetadata>({ isFile: diskIsFile, size: diskSize });
 			} }),
@@ -95,6 +96,21 @@ suite('CloudCodeContext', () => {
 		activeModel = model;
 		return model;
 	}
+
+	test('image files use inline bytes without creating editable text capabilities', async () => {
+		const image = URI.file('/project/screenshot.png');
+		const result = await context.readResources([image, image]);
+		assert.deepStrictEqual({ count: result.length, label: result[0].label, resource: result[0].resource, text: result[0].content, format: result[0].image?.dataUrl.slice(0, 22) }, {
+			count: 1, label: 'screenshot.png', resource: undefined, text: '', format: 'data:image/png;base64,'
+		});
+		assert.strictEqual(reads.length, 0);
+	});
+
+	test('clipboard files reject unsupported images and binary documents', () => {
+		assert.throws(() => context.readFileData('drawing.svg', VSBuffer.fromString('<svg/>').buffer));
+		assert.throws(() => context.readFileData('binary.dat', new Uint8Array([0, 1, 2])));
+		assert.deepStrictEqual(context.readFileData('notes.txt', VSBuffer.fromString('Hello').buffer).content, 'Hello');
+	});
 
 	test('captures unsaved active buffers as immutable snapshots without reading disk', async () => {
 		const model = openModel('unsaved content');

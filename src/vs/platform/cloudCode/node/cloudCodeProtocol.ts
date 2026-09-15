@@ -12,14 +12,7 @@ import { localize } from '../../../nls.js';
 
 export const CLOUDCODE_REDIRECT_URI = 'http://127.0.0.1:43827/cloudcode/callback';
 
-export function cloudCodeOrigin(value: string): string {
-	const url = new URL(value);
-	const loopback = url.hostname === '127.0.0.1' || url.hostname === '[::1]' || url.hostname === 'localhost';
-	if ((url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) || url.username || url.password || url.search || url.hash || url.pathname !== '/') {
-		throw new Error(localize('cloudcode.serverUrlInvalid', "The CloudCode server must be an HTTPS origin. HTTP is supported only for local development."));
-	}
-	return url.origin;
-}
+export { cloudCodeOrigin } from '../common/cloudCode.js';
 
 export interface ICloudCodeAuthConfiguration {
 	readonly client_id: string;

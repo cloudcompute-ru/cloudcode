@@ -3,6 +3,9 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { URI } from '../../../../base/common/uri.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 import { Disposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { Action2, MenuId, MenuRegistry, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { ContextKeyExpr, IContextKeyService, RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
@@ -11,7 +14,7 @@ import { registerWorkbenchContribution2, WorkbenchPhase } from '../../../common/
 import { IViewsService } from '../../../services/views/common/viewsService.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { localize, localize2 } from '../../../../nls.js';
-import { CLOUDCODE_DEFAULT_SERVER, CLOUDCODE_SERVER_SETTING, ICloudCodeService, ICloudCodeState } from '../../../../platform/cloudCode/common/cloudCode.js';
+import { cloudCodeOrigin, CLOUDCODE_DEFAULT_SERVER, CLOUDCODE_SERVER_SETTING, ICloudCodeService, ICloudCodeState } from '../../../../platform/cloudCode/common/cloudCode.js';
 import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
@@ -124,6 +127,21 @@ registerAction2(class extends Action2 {
 	}
 	async run(accessor: ServicesAccessor): Promise<void> {
 		await accessor.get(ICloudCodeService).signIn();
+	}
+});
+
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: 'cloudcode.openAccount', title: localize2('cloudcode.openAccount', "Manage Account"),
+			f1: true, precondition: signedIn,
+			menu: { id: accountMenu, group: '1_account', order: 1, when: signedIn },
+		});
+	}
+	async run(accessor: ServicesAccessor): Promise<void> {
+		const configured = accessor.get(IConfigurationService).getValue<string>(CLOUDCODE_SERVER_SETTING) || CLOUDCODE_DEFAULT_SERVER;
+		const url = URI.parse(`${cloudCodeOrigin(configured)}/settings/profile`);
+		await accessor.get(IOpenerService).open(url, { openExternal: true, allowContributedOpeners: false });
 	}
 });
 

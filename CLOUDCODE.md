@@ -1,6 +1,6 @@
 # CloudCode development and sign-in
 
-CloudCode opens CloudCompute's existing browser login, requests consent for the selected team, and streams chat responses in **View → CloudCode Chat**. Users do not copy API keys or client secrets into the editor. Chat supports explicitly attached text files and selections, automatic project exploration in Agent mode, and proposed edits with native diff review and Accept/Reject controls.
+CloudCode opens CloudCompute's existing browser login, requests consent for the selected team, and streams chat responses in **View → CloudCode Chat**. Users do not copy API keys or client secrets into the editor. Chat supports explicitly attached text files, screenshots and selections, automatic project exploration in Agent mode, and proposed edits with native diff review and Accept/Reject controls.
 
 ## Backend setup
 
@@ -42,7 +42,7 @@ Use a server origin without a path, query, or credentials. HTTPS is required exc
 
 1. Open **View → CloudCode Chat** and choose **Sign in to CloudCompute**.
 2. Sign in in the browser, select the intended team, and approve its CloudCode consent. The account must have that team's `inference.use` permission. The approved team remains attached to the desktop session even if the browser's active team changes later.
-3. Return to CloudCode, choose a model, and send a coding question. The Account menu shows the signed-in account and team. A funded balance is needed for inference; an empty balance still allows sign-in and model selection.
+3. Return to CloudCode, choose a model, and send a coding question. The Account menu shows the signed-in account and team. **Account → Manage Account** opens `/settings/profile` on the configured CloudCompute server in your browser. A funded balance is needed for inference; an empty balance still allows sign-in and model selection.
 
 Authentication uses S256 PKCE and the fixed callback `http://127.0.0.1:43827/cloudcode/callback`. CloudCode listens on that loopback port only during sign-in, so development builds work without custom-protocol registration. The browser must be on the same machine as the desktop app. If the port is occupied, close the other sign-in attempt and retry.
 
@@ -54,24 +54,26 @@ Credentials remain in the native shared process and use protected secret storage
 
 ## Attach project context
 
-Use **Attach…** above the prompt and choose **Current File**, **Selected Code**, or **Choose Files…**. Active files, selections and already-open chosen files include unsaved editor changes. In Ask and Propose Edits modes, files are read only when you explicitly attach them; file contents reach inference only when you send a message. Agent mode can also discover and read project files while handling your request.
+Paste a screenshot or copied file with **Ctrl+V** (**Cmd+V** on macOS), or drag a file from Explorer into the chat. Ordinary pasted text still goes into the prompt. You can also use **Attach…** above the prompt and choose **Current File**, **Selected Code**, or **Choose Files…**. Active files, selections and already-open chosen files include unsaved editor changes. In Ask and Propose Edits modes, files are read only when you explicitly attach them; file contents reach inference only when you send a message. Agent mode can also discover and read project files while handling your request.
 
-Each attachment is a snapshot taken when attached. Expand its name to inspect the exact text, or choose **Remove** to exclude it. Reattach the same file or range to refresh a snapshot after editing. Sent messages retain expandable copies of their attachments. Successful turns carry those snapshots into subsequent conversation context; stopped or failed turns are excluded, including their attachments.
+Each attachment is a snapshot taken when attached. Expand its name to inspect the exact text or image, or choose **Remove** to exclude it. Reattach the same file or range to refresh a snapshot after editing. Sent messages retain expandable copies of their attachments. Successful turns carry those snapshots into subsequent conversation context; stopped or failed turns are excluded, including their attachments.
 
-Limits are five files/selections per message, 16 KiB per attachment and 24 KiB total, measured as UTF-8. The existing per-message and conversation limits also apply to the serialized text. An oversized request preserves your draft and pending attachments; choose a smaller selection or remove an attachment. Binary files and unsupported resource types are rejected. Attaching and resending source context requires a trusted workspace. For current-file/selection attachments, open the file in a regular text editor rather than a diff view.
+Limits are five attachments per message. Text is limited to 16 KiB per attachment and 24 KiB total, measured as UTF-8. PNG, JPEG, GIF and WebP images have a separate budget of 4 MiB per image, five images and 8 MiB total across the retained conversation. Start a New Chat to clear earlier images. The existing per-message and conversation limits also apply to the serialized text. An oversized request preserves your draft and pending attachments; choose a smaller selection or remove an attachment. Other binary files and unsupported resource types are rejected. Attaching and resending source context requires a trusted workspace. For current-file/selection attachments, open the file in a regular text editor rather than a diff view.
 
-Local and remote text files are supported. Active untitled text buffers can also be attached. Labels use workspace-relative paths (with the folder name in multi-root workspaces); explicitly chosen files outside the workspace use their basename. Machine-specific URI identifiers are never included in inference content.
+Local and remote text files and raster images are supported. Images are sent as standard inline image content parts and require a model with image input; the picker marks models advertising image support. Deploy the matching backend image-message support before using screenshots. Text-only requests keep the existing API format. Images are reference material in Ask, Agent and Propose Edits; only attached text resources can be edited. Active untitled text buffers can also be attached. Labels use workspace-relative paths (with the folder name in multi-root workspaces); explicitly chosen files outside the workspace use their basename. Machine-specific URI identifiers are never included in inference content.
 
 ## Explore a project with Agent mode
 
-1. Open a trusted project and select **Agent** beside the model selector.
+1. Open a trusted project. **Agent** is the default mode beside the model selector; choosing another mode keeps that choice for subsequent messages and New Chat in the same window.
 2. Describe a question or change. Attaching an initial file or selection is optional.
-3. Follow the progress in the chat and expand **Agent Activity** to inspect the actions taken. The model can list directories, find filenames, search literal text and read files or line ranges across the opened workspace folders.
+3. Follow the animated thinking indicator in the chat and expand **Agent Activity** to inspect the actions taken. The indicator displays the current activity while waiting for an answer, and stops when the answer arrives, the request fails, or you press **Stop**. Reduced-motion settings disable its animation. The model can list directories, find filenames, search literal text and read files or line ranges across the opened workspace folders.
 4. Read the answer or review proposed changes with **Preview Diff**, then **Accept** or **Reject** for each file. Agent mode never applies a change automatically.
 
 Automatic discovery respects search exclusions and ignore files, including global and parent ignore files. It also excludes common generated directories, secret files and symbolic links. These filters are safeguards, not a guarantee that ordinary source files contain no sensitive information. Relevant search snippets and file contents are sent through the existing CloudCompute inference connection. Reads use unsaved text when the file is open. Local and remote workspaces are supported; trust loss or a workspace-folder change invalidates the active task.
 
 Each task starts with the current instruction and attached snapshots, independently of earlier chat. It is limited to 12 model calls and three minutes. Reads are bounded to 16 KiB, line-range reads to 200 lines, and retained snapshots to five files/selections and 24 KiB combined. Search results and total model context are also bounded. The final response exposes retained snapshots as expandable attachments. A successful answer can be followed up in Ask mode; a new Agent task explores afresh.
+
+**Ask** answers from messages and explicitly attached content, without searching the project or proposing changes. Typing a file path into Ask does not attach or read it: use **Attach…**, paste a copied file, drag it from Explorer, or choose **Agent** to find and read it. Agent can inspect dependency declarations in `package.json`; it has no internet lookup tool to verify the latest published versions.
 
 **Stop** cancels exploration and the active desktop inference request. No further tools or edits are accepted from that task. New Chat and account changes also invalidate its results. Provider generation and billing may continue as described above. Stopped or failed tasks produce no actionable edits.
 
@@ -80,7 +82,7 @@ Agent mode uses the existing chat endpoint without a backend change. The model m
 ## Propose and review code changes
 
 1. Attach the file or selected code you want to change. Use one attachment per file for an edit request.
-2. Switch **Ask** to **Propose Edits** beside the model selector, describe the change and send.
+2. Choose **Propose Edits** beside the model selector, describe the change and send.
 3. Choose **Preview Diff** for a proposed change. The native diff shows the captured file and the proposed result, including surrounding code for a selection.
 4. Choose **Accept** or **Reject** for each file. Accept becomes available after its diff opens successfully. Resolve the proposed changes before sending another request.
 

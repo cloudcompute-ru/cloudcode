@@ -11,6 +11,8 @@ import { ICloudCodeModel, ICloudCodeState } from '../../../../platform/cloudCode
 export interface ICloudCodeChatMessage {
 	readonly role: 'user' | 'assistant';
 	readonly text: string;
+	/** Current activity while waiting for an answer; never part of the model response. */
+	readonly progress?: string;
 	readonly incomplete?: boolean;
 	readonly attachments?: readonly ICloudCodeAttachment[];
 	readonly activity?: readonly string[];
@@ -18,9 +20,9 @@ export interface ICloudCodeChatMessage {
 
 export type CloudCodeChatStatus = 'disconnected' | 'loading' | 'ready' | 'running';
 
-/** The view receives account details and text only, never authentication credentials. */
+/** The view receives presentation data, never authentication credentials. */
 export interface ICloudCodeChatView {
-	readonly onDidRequestAttachments: Event<void>;
+	readonly onDidRequestAttachments: Event<void | (() => Promise<readonly ICloudCodeAttachment[]>)>;
 	readonly onDidRemoveAttachment: Event<string>;
 	readonly onDidSubmit: Event<string>;
 	readonly onDidChangeMode: Event<CloudCodeChatMode>;

@@ -5,7 +5,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { CLOUDCODE_MAX_ATTACHMENT_BYTES, CLOUDCODE_MAX_ATTACHMENTS, CLOUDCODE_MAX_ATTACHMENTS_BYTES, formatCloudCodePrompt, mergeCloudCodeAttachments } from '../../common/cloudCodeChatContext.js';
+import { cloudCodeUserMessage, CLOUDCODE_MAX_ATTACHMENT_BYTES, CLOUDCODE_MAX_ATTACHMENTS, CLOUDCODE_MAX_ATTACHMENTS_BYTES, formatCloudCodePrompt, mergeCloudCodeAttachments } from '../../common/cloudCodeChatContext.js';
 
 suite('CloudCodeChatContext', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -52,6 +52,15 @@ suite('CloudCodeChatContext', () => {
 		assert.deepStrictEqual(JSON.parse(prompt.split('\n').at(-1)!), [{ path: 'main.ts', language: 'typescript', startLine: 4, endLine: 5, content }]);
 		assert.ok(prompt.startsWith('Explain the selection\n\n'));
 		assert.ok(!prompt.includes('file:///private'));
+	});
+
+	test('images have a separate budget and do not leak data URLs into text prompts', () => {
+		const attachment = { id: 'screenshot', label: 'Screenshot.png', content: '', image: { dataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aM1sAAAAASUVORK5CYII=' } };
+		const merged = mergeCloudCodeAttachments([], [attachment]);
+		const message = cloudCodeUserMessage(formatCloudCodePrompt('Explain this', merged), merged);
+		assert.deepStrictEqual(message.images, [attachment.image]);
+		assert.ok(!message.content.includes('base64'));
+		assert.throws(() => mergeCloudCodeAttachments([], [{ ...attachment, image: { dataUrl: 'https://example.com/image.png' } }]));
 	});
 
 	test('plain questions are passed through unchanged', () => {

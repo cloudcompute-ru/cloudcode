@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { cloudCodeImagesWithinLimit } from '../common/cloudCodeImages.js';
 import { VSBuffer } from '../../../base/common/buffer.js';
 import { raceCancellationError, Sequencer } from '../../../base/common/async.js';
 import { CancellationToken, CancellationTokenSource } from '../../../base/common/cancellation.js';
@@ -256,8 +257,12 @@ export class CloudCodeService extends Disposable implements ICloudCodeService {
 		if (!isRecord(value) || !Array.isArray(value.data)) {
 			throw new Error(localize('cloudcode.invalidModels', "CloudCompute could not load the available models."));
 		}
-		return value.data.filter((model: unknown): model is { id: string; name?: string } => isRecord(model) && typeof model.id === 'string' && model.id.length > 0 && model.id.length <= 200)
-			.map(model => ({ id: model.id, name: typeof model.name === 'string' ? model.name : model.id }));
+		return value.data.filter((model: unknown): model is { id: string; name?: string; architecture?: { input_modalities?: string[] } } => isRecord(model) && typeof model.id === 'string' && model.id.length > 0 && model.id.length <= 200)
+			.map(model => ({
+				id: model.id,
+				name: typeof model.name === 'string' ? model.name : model.id,
+				...(Array.isArray(model.architecture?.input_modalities) ? { supportsImages: model.architecture.input_modalities.includes('image') } : {})
+			}));
 	}
 
 	async streamChat(requestId: string, model: string, messages: readonly ICloudCodeMessage[]): Promise<{ cancelled: boolean }> {
@@ -269,6 +274,18 @@ export class CloudCodeService extends Disposable implements ICloudCodeService {
 			|| messages.reduce((size, message) => size + Buffer.byteLength(message.content, 'utf8'), 0) > CLOUDCODE_MAX_CONTEXT_BYTES) {
 			throw new Error(localize('cloudcode.conversationLimit', "This conversation exceeds the CloudCode limit. Start a new chat or use a shorter message."));
 		}
+		const images = messages.flatMap(message => message.images ?? []);
+		if (messages.some(message => message.images !== undefined && (!Array.isArray(message.images) || message.role !== 'user'))
+			|| !cloudCodeImagesWithinLimit(images)) {
+			throw new Error(localize('cloudcode.imageLimit', "Use up to 5 PNG, JPEG, GIF, or WebP images, 4 MiB each and 8 MiB per conversation. Start a New Chat to clear earlier images."));
+		}
+		const payloadMessages = messages.map(message => ({
+			role: message.role,
+			content: message.images?.length ? [
+				{ type: 'text', text: message.content },
+				...message.images.map(image => ({ type: 'image_url', image_url: { url: image.dataUrl } }))
+			] : message.content
+		}));
 		const source = new CancellationTokenSource(this.lifetime.token);
 		this.requests.set(requestId, source);
 		let timedOut = false;
@@ -276,7 +293,7 @@ export class CloudCodeService extends Disposable implements ICloudCodeService {
 		try {
 			await raceCancellationError(this.initialize(), source.token);
 			const context = await this.authorizedRequest('/chat/completions', 'POST', {
-				model, messages, stream: true, max_tokens: 2048, stream_options: { include_usage: true }
+				model, messages: payloadMessages, stream: true, max_tokens: 2048, stream_options: { include_usage: true }
 			}, source.token);
 			const contentType = context.res.headers['content-type'];
 			if (typeof contentType !== 'string' || !contentType.toLowerCase().startsWith('text/event-stream')) {
