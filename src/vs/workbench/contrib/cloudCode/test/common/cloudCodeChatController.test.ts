@@ -201,6 +201,26 @@ suite('CloudCodeChatController', () => {
 		id: 'file:///project/main.ts', resource: 'file:///project/main.ts', label: 'main.ts', content: 'const version = 1;', languageId: 'typescript'
 	};
 
+	test('large references select Agent and reach its file tools instead of plain Ask', async () => {
+		const reference: ICloudCodeAttachment = { id: 'lock', resource: 'file:///project/package-lock.json', label: 'package-lock.json', content: '', reference: true };
+		await attach([reference]);
+		view.changeMode.fire('ask');
+		assert.strictEqual(view.mode, 'agent');
+		view.submit.fire('Review [package-lock.json]');
+		assert.deepStrictEqual({ attachments: agent.requests[0].attachments, plainRequests: service.requests.length }, { attachments: [reference], plainRequests: 0 });
+		await agent.requests[0].result.complete({ text: 'Reviewed the relevant sections.', attachments: [editableAttachment], edits: [] });
+		await settleEdits();
+	});
+
+	test('undoing removal of a file reference restores Agent mode with the attachment', async () => {
+		const reference: ICloudCodeAttachment = { id: 'lock', resource: 'file:///project/package-lock.json', label: 'package-lock.json', content: '', reference: true };
+		await attach([reference]);
+		view.draftAttachments.fire([]);
+		view.changeMode.fire('ask');
+		view.draftAttachments.fire([reference]);
+		assert.deepStrictEqual({ attachments: view.attachments, mode: view.mode }, { attachments: [reference], mode: 'agent' });
+	});
+
 	async function settleEdits(): Promise<void> {
 		await Promise.resolve();
 		await Promise.resolve();

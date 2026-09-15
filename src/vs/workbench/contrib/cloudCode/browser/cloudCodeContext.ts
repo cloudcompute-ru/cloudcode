@@ -139,6 +139,9 @@ export class CloudCodeContext {
 			const image = this.readFileData(basename(resource), file.value.buffer);
 			return { ...image, id: resource.toString(), label: this.resourceLabel(resource) };
 		}
+		if (this.canReference(resource, stat.size)) {
+			return this.fileReference(resource);
+		}
 		this.assertSize(stat.size, resource);
 		let content: string;
 		try {
@@ -149,6 +152,9 @@ export class CloudCodeContext {
 				throw this.binaryFileError(resource);
 			}
 			if (error instanceof FileOperationError && error.fileOperationResult === FileOperationResult.FILE_TOO_LARGE) {
+				if (this.canReference(resource, CLOUDCODE_MAX_ATTACHMENT_BYTES + 1)) {
+					return this.fileReference(resource);
+				}
 				this.assertSize(CLOUDCODE_MAX_ATTACHMENT_BYTES + 1, resource);
 			}
 			throw error;
@@ -159,6 +165,9 @@ export class CloudCodeContext {
 		if (currentModel) {
 			return this.snapshotModel(currentModel);
 		}
+		if (this.canReference(resource, VSBuffer.fromString(content).byteLength)) {
+			return this.fileReference(resource);
+		}
 		this.assertContent(content, resource);
 		return { id: resource.toString(), resource: resource.toString(), label: this.resourceLabel(resource), content };
 	}
@@ -166,8 +175,14 @@ export class CloudCodeContext {
 	private snapshotModel(model: ITextModel, range?: IRange): ICloudCodeAttachment {
 		this.assertSupportedResource(model.uri, true);
 		const length = range ? model.getValueLengthInRange(range) : model.getValueLength();
+		if (!range && this.canReference(model.uri, length)) {
+			return this.fileReference(model.uri, model.getLanguageId());
+		}
 		this.assertSize(length, model.uri);
 		const content = range ? model.getValueInRange(range) : model.getValue();
+		if (!range && this.canReference(model.uri, VSBuffer.fromString(content).byteLength)) {
+			return this.fileReference(model.uri, model.getLanguageId());
+		}
 		this.assertContent(content, model.uri);
 		const label = this.resourceLabel(model.uri);
 		const endLine = range && range.endColumn === 1 && range.endLineNumber > range.startLineNumber ? range.endLineNumber - 1 : range?.endLineNumber;
@@ -180,6 +195,15 @@ export class CloudCodeContext {
 			languageId: model.getLanguageId(),
 			...(range ? { startLine: range.startLineNumber, endLine } : {}),
 		};
+	}
+
+	private canReference(resource: URI, bytes: number): boolean {
+		return bytes > CLOUDCODE_MAX_ATTACHMENT_BYTES && (resource.scheme === Schemas.file || resource.scheme === Schemas.vscodeRemote) && !!this.workspaceContextService.getWorkspaceFolder(resource);
+	}
+
+	private fileReference(resource: URI, languageId?: string): ICloudCodeAttachment {
+		this.assertWorkspaceTrusted();
+		return { id: resource.toString(), resource: resource.toString(), label: this.resourceLabel(resource), content: '', reference: true, languageId };
 	}
 
 	private assertSupportedResource(resource: URI, allowUntitled: boolean): void {

@@ -399,8 +399,10 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 	private renderAttachment(parent: HTMLElement, attachment: ICloudCodeAttachment, expanded = false): void {
 		const details = dom.append(parent, dom.$<HTMLDetailsElement>('details.cloudcode-chat-attachment-preview'));
 		details.open = expanded;
-		dom.append(details, dom.$('summary')).textContent = localize('cloudcode.attachmentSummary', "{0} ({1} KiB)", attachment.label, ((attachment.image ? cloudCodeImageBytes(attachment.image.dataUrl) ?? 0 : new TextEncoder().encode(attachment.content).byteLength) / 1024).toFixed(1));
-		if (attachment.image && cloudCodeImageBytes(attachment.image.dataUrl) !== undefined) {
+		dom.append(details, dom.$('summary')).textContent = attachment.reference ? attachment.label : localize('cloudcode.attachmentSummary', "{0} ({1} KiB)", attachment.label, ((attachment.image ? cloudCodeImageBytes(attachment.image.dataUrl) ?? 0 : new TextEncoder().encode(attachment.content).byteLength) / 1024).toFixed(1));
+		if (attachment.reference) {
+			dom.append(details, dom.$('p')).textContent = localize('cloudcode.referencePreview', "Attached by reference. Agent reads relevant sections as needed.");
+		} else if (attachment.image && cloudCodeImageBytes(attachment.image.dataUrl) !== undefined) {
 			const image = dom.append(details, dom.$<HTMLImageElement>('img.cloudcode-chat-image'));
 			image.src = attachment.image.dataUrl;
 			image.alt = attachment.label;
