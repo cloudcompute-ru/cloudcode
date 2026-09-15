@@ -69,6 +69,18 @@ export class CloudCodeChatController extends Disposable {
 			}
 		}));
 		this._register(view.onDidRequestAttachments(read => void this.attachContext(read || undefined)));
+		this._register(view.onDidChangeDraftAttachments(attachments => {
+			if (this.running || this.editBusy || this.loadingAttachments || this.hasPendingEdits() || this.state.status !== 'signedIn') {
+				this.view.setAttachments(this.attachments, this.loadingAttachments);
+				return;
+			}
+			try {
+				if (attachments.length) { this.contextProvider?.assertWorkspaceTrusted(); }
+				this.attachments = mergeCloudCodeAttachments([], attachments);
+			} catch (error) { this.showError(error); }
+			this.view.setAttachments(this.attachments, false);
+			this.saveScheduler.schedule();
+		}));
 		this._register(view.onDidRemoveAttachment(id => {
 			if (this.editBusy || this.running) {
 				return;
@@ -617,7 +629,7 @@ export class CloudCodeChatController extends Disposable {
 		this.selectedModel = this.models.length ? this.models.find(model => model.id === chat.model)?.id ?? this.models[0].id : chat.model;
 		this.view.setMessages(this.messages);
 		this.view.setAttachments(this.attachments, false);
-		this.view.setDraft(chat.draft);
+		this.view.setDraft(chat.draft, chat.draftReferences ?? []);
 		this.view.setEditMode(this.mode);
 		this.view.setModels(this.models, this.selectedModel, this.loadingModels);
 		this.view.setError(undefined);
@@ -635,7 +647,7 @@ export class CloudCodeChatController extends Disposable {
 		if (this.hasPendingEdits()) {
 			messages.push({ role: 'assistant', text: localize('cloudcode.archivedEdits', "The unreviewed changes were discarded. Ask again to prepare a fresh diff.") });
 		}
-		return { id: this.conversationId, title, messages, history: this.history, attachments: this.attachments, draft: this.view.getDraft(), mode: this.mode, model: this.selectedModel };
+		return { id: this.conversationId, title, messages, history: this.history, attachments: this.attachments, draft: this.view.getDraft(), draftReferences: this.view.getDraftReferences(), mode: this.mode, model: this.selectedModel };
 	}
 
 	private renderConversations(): void {

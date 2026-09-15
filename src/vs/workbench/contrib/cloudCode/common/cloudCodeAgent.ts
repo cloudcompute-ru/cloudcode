@@ -222,7 +222,7 @@ export class CloudCodeAgent implements ICloudCodeAgent {
 			for (let turn = 0; turn < maxModelCalls; turn++) {
 				assertValid();
 				const messages = createMessages(prompt, session.roots, snapshots, log, maxModelCalls - turn);
-				onProgress(localize('cloudCode.agent.thinking', "Thinking… ({0}/{1})", turn + 1, maxModelCalls));
+				onProgress(localize('cloudCode.agent.thinking', "Thinking…"));
 				const response = await this.request(model, messages, cancellation.token);
 				assertValid();
 				const action = parseAction(response, session.roots);

@@ -10,6 +10,7 @@ import { DataTransfers } from '../../../../base/browser/dnd.js';
 import { CodeDataTransfers, containsDragType } from '../../../../platform/dnd/browser/dnd.js';
 import { cloudCodeImageBytes } from '../../../../platform/cloudCode/common/cloudCodeImages.js';
 import { CloudCodeAttachmentInput } from './cloudCodeAttachmentInput.js';
+import { CloudCodeComposer } from './cloudCodeComposer.js';
 import * as dom from '../../../../base/browser/dom.js';
 import { Button } from '../../../../base/browser/ui/button/button.js';
 import { ProgressBar } from '../../../../base/browser/ui/progressbar/progressbar.js';
@@ -19,7 +20,7 @@ import { localize } from '../../../../nls.js';
 import { ICloudCodeModel, ICloudCodeState } from '../../../../platform/cloudCode/common/cloudCode.js';
 import { defaultButtonStyles, defaultProgressBarStyles } from '../../../../platform/theme/browser/defaultStyles.js';
 import { ICloudCodeAttachment } from '../common/cloudCodeChatContext.js';
-import { CloudCodeChatStatus, ICloudCodeChatMessage, ICloudCodeChatView } from '../common/cloudCodeChat.js';
+import { CloudCodeChatStatus, ICloudCodeChatMessage, ICloudCodeChatView, ICloudCodeDraftReference } from '../common/cloudCodeChat.js';
 import { CloudCodeChatMode, ICloudCodeEditProposal } from '../common/cloudCodeEdits.js';
 
 /** Presentation only; browser sign-in and inference run through the controller. */
@@ -33,15 +34,16 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 	readonly onDidSelectConversation = this.selectConversationEmitter.event;
 	private readonly changeDraftEmitter = this._register(new Emitter<void>());
 	readonly onDidChangeDraft = this.changeDraftEmitter.event;
+	private readonly changeDraftAttachmentsEmitter = this._register(new Emitter<readonly ICloudCodeAttachment[]>());
+	readonly onDidChangeDraftAttachments = this.changeDraftAttachmentsEmitter.event;
 	private readonly conversation: HTMLElement;
 	private readonly emptyState: HTMLElement;
 	private readonly messages: HTMLElement;
-	private readonly prompt: HTMLTextAreaElement;
+	private readonly prompt: CloudCodeComposer;
+	private submittedDraft: { text: string; references: readonly ICloudCodeDraftReference[] } | undefined;
 	private readonly attachButton: Button;
-	private readonly attachmentsNode: HTMLElement;
+	private readonly attachmentPreview: HTMLElement;
 	private readonly attachmentHint: HTMLElement;
-	private readonly attachmentDisposables = this._register(new DisposableStore());
-	private readonly attachmentRemoveButtons: HTMLButtonElement[] = [];
 	private loadingAttachments = false;
 	private draftRevision = 0;
 	private readonly statusLabel: HTMLElement;
@@ -155,19 +157,22 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 		this.attachButton.element.appendChild(renderIcon(Codicon.attach));
 		this.attachButton.element.setAttribute('aria-label', localize('cloudcode.attach', "Attach Files…"));
 		this.attachmentHint = dom.append(attachmentToolbar, dom.$('.cloudcode-chat-hint'));
-		this.attachmentsNode = dom.append(input, dom.$('.cloudcode-chat-attachments', { 'aria-label': localize('cloudcode.attachments', "Attachments"), role: 'list' }));
-		this._register(this.attachButton.onDidClick(() => this.requestAttachmentsEmitter.fire()));
+		this.attachmentPreview = dom.append(input, dom.$('.cloudcode-chat-chip-preview'));
+		this.attachmentPreview.hidden = true;
+		this._register(this.attachButton.onDidClick(() => { this.prompt.markInsertionPoint(); this.requestAttachmentsEmitter.fire(); }));
 		const progress = dom.append(composer, dom.$('.cloudcode-chat-progress'));
 		this.progressBar = this._register(new ProgressBar(progress, {
 			...defaultProgressBarStyles,
 			ariaLabel: localize('cloudcode.progress', "CloudCode response in progress")
 		}));
 
-		const promptLabel = dom.append(input, dom.$('label.cloudcode-chat-prompt-label'));
-		this.prompt = dom.append(promptLabel, dom.$('textarea.cloudcode-chat-prompt', {
-			rows: 3,
-			'aria-label': localize('cloudcode.message', "Message"),
-			placeholder: localize('cloudcode.promptPlaceholder', "Ask CloudCode…")
+		this.prompt = this._register(new CloudCodeComposer(input));
+		this._register(this.prompt.onDidChange(() => { this.draftRevision++; this.changeDraftEmitter.fire(); this.updateControls(); }));
+		this._register(this.prompt.onDidChangeAttachments(attachments => this.changeDraftAttachmentsEmitter.fire(attachments)));
+		this._register(this.prompt.onDidPreview(attachment => {
+			dom.clearNode(this.attachmentPreview);
+			this.renderAttachment(this.attachmentPreview, attachment, true);
+			this.attachmentPreview.hidden = false;
 		}));
 
 		const footer = dom.append(input, dom.$('.cloudcode-chat-footer'));
@@ -197,35 +202,27 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 
 		this.connectionHint = dom.append(composer, dom.$('p.cloudcode-chat-hint'));
 
-		this._register(dom.addDisposableListener(this.prompt, dom.EventType.INPUT, () => { this.draftRevision++; this.changeDraftEmitter.fire(); this.updateControls(); }));
-		this._register(dom.addDisposableListener(this.prompt, dom.EventType.KEY_DOWN, (event: KeyboardEvent) => {
-			if (event.key === 'Enter' && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey && !event.isComposing && this.status === 'ready') {
+		this._register(dom.addDisposableListener(this.prompt.domNode, dom.EventType.KEY_DOWN, (event: KeyboardEvent) => {
+			if (!event.defaultPrevented && event.key === 'Enter' && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey && !event.isComposing && this.status === 'ready') {
 				event.preventDefault();
 				this.submit();
 			}
 		}));
-		this._register(dom.addDisposableListener(this.prompt, 'paste', (event: ClipboardEvent) => {
+		this._register(dom.addDisposableListener(this.prompt.domNode, 'paste', (event: ClipboardEvent) => {
+			event.preventDefault();
+			event.stopPropagation();
 			if (!this.attachmentInput || !this.attachButton.enabled) {
+				this.prompt.insertText(event.clipboardData?.getData('text/plain') ?? '');
 				return;
 			}
 			const files = Array.from(event.clipboardData?.files ?? []);
 			const text = event.clipboardData?.getData('text/plain') ?? '';
-			const start = this.prompt.selectionStart;
-			const end = this.prompt.selectionEnd;
+			this.prompt.markInsertionPoint();
 			const revision = this.draftRevision;
-			event.preventDefault();
-			event.stopPropagation();
 			this.requestAttachmentsEmitter.fire(async () => {
 				const attachments = await this.attachmentInput!.readPaste(files, text.length > 0);
 				if (!attachments.length && text && !this._store.isDisposed && revision === this.draftRevision && this.state.status === 'signedIn') {
-					this.prompt.setSelectionRange(start, end);
-					if (this.prompt.ownerDocument.activeElement !== this.prompt || !this.prompt.ownerDocument.execCommand('insertText', false, text)) {
-						this.prompt.setRangeText(text, start, end, 'end');
-					}
-
-					this.draftRevision++;
-					this.changeDraftEmitter.fire();
-					this.updateControls();
+					this.prompt.insertText(text);
 				}
 				return attachments;
 			});
@@ -262,9 +259,15 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 				event.preventDefault();
 				event.stopPropagation();
 				if (this.attachButton.enabled) {
+					this.prompt.setDropPosition(event.clientX, event.clientY);
 					this.requestAttachmentsEmitter.fire(this.attachmentInput.captureDrop(event));
 					this.focus();
 				}
+			} else {
+				event.preventDefault();
+				event.stopPropagation();
+				this.prompt.setDropPosition(event.clientX, event.clientY);
+				this.prompt.insertText(event.dataTransfer?.getData('text/plain') ?? '');
 			}
 		}));
 		this._register(this.sendButton.onDidClick(() => this.submit()));
@@ -386,37 +389,10 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 
 	setAttachments(attachments: readonly ICloudCodeAttachment[], loading: boolean): void {
 		this.loadingAttachments = loading;
-		this.attachmentDisposables.clear();
-		this.attachmentRemoveButtons.length = 0;
-		dom.clearNode(this.attachmentsNode);
-		this.attachmentsNode.hidden = attachments.length === 0;
-		this.attachmentHint.textContent = loading
-			? localize('cloudcode.readingAttachments', "Reading attachments…")
-			: '';
-		for (const attachment of attachments) {
-			const row = dom.append(this.attachmentsNode, dom.$('.cloudcode-chat-attachment-chip', { role: 'listitem' }));
-			const preview = dom.append(row, dom.$<HTMLButtonElement>('button.cloudcode-chat-attachment-name', { type: 'button', 'aria-expanded': 'false' }));
-			if (attachment.image && cloudCodeImageBytes(attachment.image.dataUrl) !== undefined) {
-				const image = dom.append(preview, dom.$<HTMLImageElement>('img.cloudcode-chat-attachment-thumbnail'));
-				image.src = attachment.image.dataUrl;
-				image.alt = attachment.label;
-			} else {
-				preview.appendChild(renderIcon(attachment.label.endsWith('.json') ? Codicon.json : Codicon.file));
-			}
-			dom.append(preview, dom.$('span')).textContent = attachment.label;
-			const content = dom.append(this.attachmentsNode, dom.$('.cloudcode-chat-chip-preview'));
-			content.hidden = true;
-			this.attachmentDisposables.add(dom.addDisposableListener(preview, 'click', () => {
-				if (!content.hasChildNodes()) { this.renderAttachment(content, attachment, true); }
-				content.hidden = !content.hidden;
-				preview.setAttribute('aria-expanded', String(!content.hidden));
-			}));
-			const remove = dom.append(row, dom.$<HTMLButtonElement>('button.cloudcode-chat-attachment-remove', { type: 'button', 'aria-label': localize('cloudcode.removeNamedAttachment', "Remove {0}", attachment.label) }));
-			remove.appendChild(renderIcon(Codicon.close));
-			this.attachmentRemoveButtons.push(remove);
-			this.attachmentDisposables.add(dom.addDisposableListener(remove, 'click', () => this.removeAttachmentEmitter.fire(attachment.id)));
-		}
-
+		this.attachmentHint.textContent = loading ? localize('cloudcode.readingAttachments', "Reading attachments…") : '';
+		this.attachmentPreview.hidden = true;
+		dom.clearNode(this.attachmentPreview);
+		this.prompt.setAttachments(attachments, loading);
 		this.updateControls();
 	}
 
@@ -541,6 +517,7 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 	}
 
 	getDraft(): string { return this.prompt.value; }
+	getDraftReferences(): readonly ICloudCodeDraftReference[] { return this.prompt.references; }
 
 	setConversations(chats: readonly { id: string; title: string }[], activeId: string): void {
 		const focused = this.tabList.contains(this.tabList.ownerDocument.activeElement);
@@ -562,9 +539,10 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 		}
 	}
 
-	setDraft(value: string): void {
+	setDraft(value: string, references?: readonly ICloudCodeDraftReference[]): void {
 		this.draftRevision++;
-		this.prompt.value = value;
+		this.prompt.setValue(value, references ?? (this.submittedDraft?.text === value ? this.submittedDraft.references : []));
+		if (references) { this.prompt.ensureAttachments(); }
 		this.updateControls();
 	}
 
@@ -603,9 +581,7 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 		this.modeButton.enabled = canInteract && !this.loadingAttachments && !this.hasPendingProposals;
 		this.stopButton.enabled = this.status === 'running';
 		this.modelButton.enabled = canInteract && !this.hasPendingProposals && !this.loadingModels && this.models.length > 0;
-		for (const remove of this.attachmentRemoveButtons) {
-			remove.disabled = !canInteract || this.loadingAttachments || this.hasPendingProposals;
-		}
+
 		this.stopButton.element.hidden = this.status !== 'running';
 		for (const { proposal, preview, accept, reject } of this.proposalButtons) {
 			preview.enabled = canInteract;
@@ -631,7 +607,9 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 		if (this.state.status !== 'signedIn' || this.status !== 'ready' || this.loadingAttachments || this.editingBusy || this.hasPendingProposals || !prompt) {
 			return;
 		}
-		this.prompt.value = '';
+		const leadingWhitespace = this.prompt.value.length - this.prompt.value.trimStart().length;
+		this.submittedDraft = { text: prompt, references: this.prompt.references.map(reference => ({ ...reference, start: reference.start - leadingWhitespace, end: reference.end - leadingWhitespace })) };
+		this.prompt.setValue('');
 		this.updateControls();
 		this.submitEmitter.fire(prompt);
 		this.focus();

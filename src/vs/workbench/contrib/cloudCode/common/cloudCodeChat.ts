@@ -20,10 +20,18 @@ export interface ICloudCodeChatMessage {
 
 export type CloudCodeChatStatus = 'disconnected' | 'loading' | 'ready' | 'running';
 
+/** An inline file token's offsets in the plain-text draft. */
+export interface ICloudCodeDraftReference {
+	readonly id: string;
+	readonly start: number;
+	readonly end: number;
+}
+
 /** The view receives presentation data, never authentication credentials. */
 export interface ICloudCodeChatView {
 	readonly onDidSelectConversation: Event<string>;
 	readonly onDidChangeDraft: Event<void>;
+	readonly onDidChangeDraftAttachments: Event<readonly ICloudCodeAttachment[]>;
 	readonly onDidRequestAttachments: Event<void | (() => Promise<readonly ICloudCodeAttachment[]>)>;
 	readonly onDidRemoveAttachment: Event<string>;
 	readonly onDidSubmit: Event<string>;
@@ -45,7 +53,8 @@ export interface ICloudCodeChatView {
 	appendResponse(text: string): void;
 	setStatus(status: CloudCodeChatStatus): void;
 	setError(message: string | undefined): void;
-	setDraft(value: string): void;
+	setDraft(value: string, references?: readonly ICloudCodeDraftReference[]): void;
 	getDraft(): string;
+	getDraftReferences(): readonly ICloudCodeDraftReference[];
 	setConversations(chats: readonly { id: string; title: string }[], activeId: string): void;
 }

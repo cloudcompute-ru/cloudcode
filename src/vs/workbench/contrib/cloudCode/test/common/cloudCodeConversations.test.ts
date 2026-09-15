@@ -16,6 +16,13 @@ suite('CloudCode conversation storage', () => {
 		assert.deepStrictEqual(parseCloudCodeConversations(serializeCloudCodeConversations(archive)), archive);
 	});
 
+	test('round trips inline token positions and rejects references that do not match an attachment', () => {
+		const conversation = { ...chat, draft: 'Review [file.json] next', draftReferences: [{ id: 'file', start: 7, end: 18 }], attachments: [{ id: 'file', label: 'file.json', content: '{}' }] };
+		const archive = { conversations: [conversation], activeId: chat.id };
+		assert.deepStrictEqual(parseCloudCodeConversations(serializeCloudCodeConversations(archive)), archive);
+		assert.strictEqual(parseCloudCodeConversations(JSON.stringify({ ...archive, conversations: [{ ...conversation, draftReferences: [{ id: 'missing', start: 7, end: 18 }] }] })), undefined);
+	});
+
 	test('retains the active conversation and newest chats when the archive is full', () => {
 		const conversations = Array.from({ length: 34 }, (_, index) => ({ ...chat, id: String(index) }));
 		const archive = parseCloudCodeConversations(serializeCloudCodeConversations({ conversations, activeId: '0' }))!;
