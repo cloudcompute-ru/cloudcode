@@ -12,7 +12,6 @@ import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { equals } from '../../../../base/common/objects.js';
 import { isWeb } from '../../../../base/common/platform.js';
-import { IDefaultChatAgent } from '../../../../base/common/product.js';
 import { isString, isUndefined, Mutable } from '../../../../base/common/types.js';
 import { IRequestContext } from '../../../../base/parts/request/common/request.js';
 import { localize2 } from '../../../../nls.js';
@@ -90,7 +89,14 @@ interface IMcpRegistryResponse {
 	readonly mcp_registries: ReadonlyArray<IMcpRegistryProvider>;
 }
 
-function toDefaultAccountConfig(defaultChatAgent: IDefaultChatAgent): IDefaultAccountConfig {
+function toDefaultAccountConfig(productService: IProductService): IDefaultAccountConfig | undefined {
+	if (productService.disableBuiltinCopilot) {
+		return undefined;
+	}
+	const defaultChatAgent = productService.defaultChatAgent;
+	if (!defaultChatAgent) {
+		return undefined;
+	}
 	return {
 		preferredExtensions: [
 			defaultChatAgent.chatExtensionId,
@@ -147,14 +153,18 @@ export class DefaultAccountService extends Disposable implements IDefaultAccount
 	private readonly _onDidChangeManagedSettingsFreshness = this._register(new Emitter<IManagedSettingsFreshness>());
 	readonly onDidChangeManagedSettingsFreshness = this._onDidChangeManagedSettingsFreshness.event;
 
-	private readonly defaultAccountConfig: IDefaultAccountConfig;
+	private readonly defaultAccountConfig: IDefaultAccountConfig | undefined;
 	private defaultAccountProvider: IDefaultAccountProvider | null = null;
 
 	constructor(
 		@IProductService productService: IProductService,
 	) {
 		super();
-		this.defaultAccountConfig = toDefaultAccountConfig(productService.defaultChatAgent);
+		this.defaultAccountConfig = toDefaultAccountConfig(productService);
+		if (!this.defaultAccountConfig) {
+			// No provider will be installed. Startup consumers must still be able to resolve account state.
+			this.initBarrier.open();
+		}
 	}
 
 	async getDefaultAccount(): Promise<IDefaultAccount | null> {
@@ -167,7 +177,8 @@ export class DefaultAccountService extends Disposable implements IDefaultAccount
 			return this.defaultAccountProvider.getDefaultAccountAuthenticationProvider();
 		}
 		return {
-			...this.defaultAccountConfig.authenticationProvider.default,
+			// GitHub authentication remains available independently of Copilot.
+			...(this.defaultAccountConfig?.authenticationProvider.default ?? { id: 'github', name: 'GitHub' }),
 			enterprise: false
 		};
 	}
@@ -1631,7 +1642,7 @@ export class DefaultAccountProvider extends Disposable implements IDefaultAccoun
 
 }
 
-class DefaultAccountProviderContribution extends Disposable implements IWorkbenchContribution {
+export class DefaultAccountProviderContribution extends Disposable implements IWorkbenchContribution {
 
 	static ID = 'workbench.contributions.defaultAccountProvider';
 
@@ -1639,9 +1650,15 @@ class DefaultAccountProviderContribution extends Disposable implements IWorkbenc
 		@IProductService productService: IProductService,
 		@IInstantiationService instantiationService: IInstantiationService,
 		@IDefaultAccountService defaultAccountService: IDefaultAccountService,
+		@IContextKeyService contextKeyService: IContextKeyService,
 	) {
 		super();
-		const defaultAccountProvider = this._register(instantiationService.createInstance(DefaultAccountProvider, toDefaultAccountConfig(productService.defaultChatAgent)));
+		const config = toDefaultAccountConfig(productService);
+		if (!config) {
+			CONTEXT_DEFAULT_ACCOUNT_STATE.bindTo(contextKeyService).set(DefaultAccountStatus.Unavailable);
+			return;
+		}
+		const defaultAccountProvider = this._register(instantiationService.createInstance(DefaultAccountProvider, config));
 		defaultAccountService.setDefaultAccountProvider(defaultAccountProvider);
 	}
 }

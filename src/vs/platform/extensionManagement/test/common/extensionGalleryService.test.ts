@@ -158,6 +158,24 @@ suite('Extension Gallery Service', () => {
 		return new ExtensionGalleryServiceWithNoStorageService(requestService, logService, environmentService, NullTelemetryService, fileService, productService, configurationService, allowedExtensionsService, createExtensionGalleryManifestService());
 	}
 
+	test('gallery search preserves ordinary extensions without a default chat agent', async () => {
+		productService = { ...productService, defaultChatAgent: undefined! };
+		const requestService = new RecordingRequestService(() => requestContext(200, galleryQueryResponse([rawLatestExtension()])));
+		const galleryService = createExtensionGalleryService(requestService);
+		const page = await galleryService.query({ text: 'extension' }, CancellationToken.None);
+		assert.deepStrictEqual(page.firstPage.map(extension => extension.identifier.id), ['publisher.extension']);
+	});
+
+	test('extension control reports work without injecting a Copilot migration', async () => {
+		productService = { ...productService, defaultChatAgent: undefined!, extensionsGallery: { serviceUrl: 'https://marketplace.test', controlUrl: 'https://marketplace.test/control', extensionUrlTemplate: '', resourceUrlTemplate: '', nlsBaseUrl: '' } };
+		const requestService = new RecordingRequestService(() => requestContext(200, { malicious: ['bad.extension'], deprecated: { 'old.extension': true }, autoUpdate: {} }));
+		const manifest = await createExtensionGalleryService(requestService).getExtensionsControlManifest();
+		assert.deepStrictEqual({ deprecated: manifest.deprecated, malicious: manifest.malicious }, {
+			deprecated: { 'old.extension': {} },
+			malicious: [{ extensionOrPublisher: { id: 'bad.extension' }, learnMoreLink: undefined }],
+		});
+	});
+
 	test('marketplace machine id', async () => {
 		const headers = await resolveMarketplaceHeaders(product.version, productService, environmentService, configurationService, fileService, storageService, NullTelemetryService);
 		assert.ok(headers['X-Market-User-Id']);

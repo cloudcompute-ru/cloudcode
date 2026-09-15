@@ -15,6 +15,7 @@ import { IConfigurationService } from '../../../../../platform/configuration/com
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
 import { IContextKeyService } from '../../../../../platform/contextkey/common/contextkey.js';
 import { MockContextKeyService } from '../../../../../platform/keybinding/test/common/mockKeybindingService.js';
+import { IDefaultAccountService } from '../../../../../platform/defaultAccount/common/defaultAccount.js';
 import { TestInstantiationService } from '../../../../../platform/instantiation/test/common/instantiationServiceMock.js';
 import { ILogService, NullLogService } from '../../../../../platform/log/common/log.js';
 import { COPILOT_FORCE_REMOTE_SETTINGS_REFRESH_KEY, IFileManagedSettingsService, INativeManagedSettingsService, ManagedSettingsData, NullFileManagedSettingsService, NullNativeManagedSettingsService } from '../../../../../platform/policy/common/copilotManagedSettings.js';
@@ -28,9 +29,46 @@ import { AuthenticationSession, AuthenticationSessionsChangeEvent, IAuthenticati
 import { IWorkbenchEnvironmentService } from '../../../environment/common/environmentService.js';
 import { IExtensionService } from '../../../extensions/common/extensions.js';
 import { IHostService } from '../../../host/browser/host.js';
-import { DefaultAccountProvider, DefaultAccountService } from '../../browser/defaultAccount.js';
+import { DefaultAccountProvider, DefaultAccountProviderContribution, DefaultAccountService, DefaultAccountStatus } from '../../browser/defaultAccount.js';
 import { TestProductService } from '../../../../test/common/workbenchTestServices.js';
 import { AccountPolicyGateState, AccountPolicyService } from '../../../policies/common/accountPolicyService.js';
+
+suite('DefaultAccountService without Copilot', () => {
+	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
+
+	for (const [name, product] of [
+		['missing provider', { ...TestProductService, disableBuiltinCopilot: false, defaultChatAgent: undefined! }],
+		['disabled provider', { ...TestProductService, disableBuiltinCopilot: true, get defaultChatAgent(): never { return assert.fail('Disabled Copilot configuration must not be accessed'); } }],
+		['CloudCode product', { ...TestProductService, disableBuiltinCopilot: true, defaultChatAgent: undefined! }],
+	] as const) {
+		test(`${name}: startup and account operations complete without a Copilot provider`, async () => {
+			const service = disposables.add(new DefaultAccountService(product));
+			const contextKeyService = disposables.add(new MockContextKeyService());
+			const instantiationService = disposables.add(new TestInstantiationService());
+			instantiationService.stub(IProductService, product);
+			instantiationService.stub(IDefaultAccountService, service);
+			instantiationService.stub(IContextKeyService, contextKeyService);
+			// No request, authentication, extension or storage dependencies are registered.
+			disposables.add(instantiationService.createInstance(DefaultAccountProviderContribution));
+			const results = await Promise.all([service.getDefaultAccount(), service.refresh(), service.signIn(), service.signOut()]);
+			assert.deepStrictEqual({
+				results,
+				status: contextKeyService.getContextKeyValue('defaultAccountStatus'),
+				provider: service.getDefaultAccountAuthenticationProvider(),
+				policy: service.policyData,
+				token: service.copilotTokenInfo,
+				freshness: service.managedSettingsFreshness,
+			}, {
+				results: [null, null, null, undefined],
+				status: DefaultAccountStatus.Unavailable,
+				provider: { id: 'github', name: 'GitHub', enterprise: false },
+				policy: null,
+				token: null,
+				freshness: { state: ManagedSettingsFreshnessState.NotRequired },
+			});
+		});
+	}
+});
 
 suite('DefaultAccountProvider', () => {
 
