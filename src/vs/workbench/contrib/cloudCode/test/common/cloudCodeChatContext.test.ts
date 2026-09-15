@@ -66,4 +66,11 @@ suite('CloudCodeChatContext', () => {
 	test('plain questions are passed through unchanged', () => {
 		assert.strictEqual(formatCloudCodePrompt('Hello\nworld', []), 'Hello\nworld');
 	});
+
+	test('unread references serialize honestly without an empty source snapshot or local path', () => {
+		const reference = { id: 'lock', resource: 'file:///project/package-lock.json', label: 'package-lock.json', content: '', reference: true as const };
+		const prompt = formatCloudCodePrompt('Review', mergeCloudCodeAttachments([], [reference]));
+		assert.deepStrictEqual(JSON.parse(prompt.split('\n').at(-1)!), [{ path: 'package-lock.json', content: '[File reference; contents have not been read]' }]);
+		assert.strictEqual(prompt.includes('file:///'), false);
+	});
 });

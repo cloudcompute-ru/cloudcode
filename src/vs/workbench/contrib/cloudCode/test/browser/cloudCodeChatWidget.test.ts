@@ -13,8 +13,8 @@ import { createTextModel } from '../../../../../editor/test/common/testTextModel
 import { IModelService } from '../../../../../editor/common/services/model.js';
 import { IClipboardService } from '../../../../../platform/clipboard/common/clipboardService.js';
 import { IFileDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
-import { IFileService } from '../../../../../platform/files/common/files.js';
-import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
+import { IFileService, IFileStatWithPartialMetadata } from '../../../../../platform/files/common/files.js';
+import { IWorkspace, IWorkspaceContextService, toWorkspaceFolder } from '../../../../../platform/workspace/common/workspace.js';
 import { IWorkspaceTrustManagementService } from '../../../../../platform/workspace/common/workspaceTrust.js';
 import { IEditorService } from '../../../../services/editor/common/editorService.js';
 import { ITextFileService } from '../../../../services/textfile/common/textfiles.js';
@@ -156,6 +156,15 @@ suite('CloudCodeChatWidget thinking state', () => {
 		assert.deepStrictEqual({ submitted, previewHidden: widget.domNode.querySelector<HTMLElement>('.cloudcode-chat-chip-preview')!.hidden }, { submitted: false, previewHidden: false });
 	});
 
+	test('file reference chips show an on-demand preview rather than an empty file', () => {
+		widget.setAttachments([{ id: 'lock', label: 'package-lock.json', resource: 'file:///project/package-lock.json', content: '', reference: true }], false);
+		widget.domNode.querySelector<HTMLElement>('.cloudcode-chat-attachment-chip')!.click();
+		const preview = widget.domNode.querySelector<HTMLElement>('.cloudcode-chat-chip-preview')!;
+		assert.deepStrictEqual({ label: preview.querySelector('summary')?.textContent, body: preview.querySelector('p')?.textContent, source: preview.querySelector('pre'), draft: widget.getDraft() }, {
+			label: 'package-lock.json', body: 'Attached by reference. Agent reads relevant sections as needed.', source: null, draft: '[package-lock.json] '
+		});
+	});
+
 	test('shows thinking until the first answer text while preserving the streamed text node', () => {
 		widget.setMessages([{ role: 'user', text: 'Review package.json' }, { role: 'assistant', text: '' }]);
 		const thinking = widget.domNode.querySelector<HTMLElement>('.cloudcode-chat-thinking')!;
@@ -209,19 +218,27 @@ suite('CloudCodeChatWidget attachments', () => {
 	let clipboardResources: URI[];
 	let attachments: readonly ICloudCodeAttachment[];
 	let completion: Promise<void>;
+	let largeFileContent: string;
 
 	setup(() => {
 		clipboardResources = [];
 		attachments = [];
 		completion = Promise.resolve();
+		largeFileContent = '{\n"lockfileVersion": 3,\n' + '"dependency": {},\n'.repeat(45000) + '}';
 		const model = disposables.add(createTextModel('unsaved changes', 'typescript', undefined, resource));
 		const context = new CloudCodeContext(
 			upcastPartial<IEditorService>({}),
 			upcastPartial<IModelService>({ getModel: uri => uri.toString() === resource.toString() ? model : null }),
-			upcastPartial<ITextFileService>({}),
-			upcastPartial<IFileService>({ stat: async () => { throw new Error('Must use the editor buffer'); } }),
+			upcastPartial<ITextFileService>({ read: async () => { throw new Error('Large file contents must not be copied when attaching'); } }),
+			upcastPartial<IFileService>({ stat: async uri => {
+				assert.strictEqual(uri.path, '/project/package-lock.json');
+				return upcastPartial<IFileStatWithPartialMetadata>({ resource: uri, name: 'package-lock.json', isFile: true, isDirectory: false, isSymbolicLink: false, size: new TextEncoder().encode(largeFileContent).byteLength });
+			} }),
 			upcastPartial<IFileDialogService>({}),
-			upcastPartial<IWorkspaceContextService>({ getWorkspaceFolder: () => null }),
+			upcastPartial<IWorkspaceContextService>({
+				getWorkspaceFolder: () => toWorkspaceFolder(URI.file('/project')),
+				getWorkspace: () => upcastPartial<IWorkspace>({ folders: [toWorkspaceFolder(URI.file('/project'))] }),
+			}),
 			upcastPartial<IWorkspaceTrustManagementService>({ isWorkspaceTrusted: () => true }),
 		);
 		const input = new CloudCodeAttachmentInput(context, upcastPartial<IClipboardService>({
@@ -266,6 +283,19 @@ suite('CloudCodeChatWidget attachments', () => {
 		assert.deepStrictEqual({ prevented: event.defaultPrevented, content: attachments[0]?.content, resource: attachments[0]?.resource }, {
 			prevented: true, content: 'unsaved changes', resource: resource.toString()
 		});
+	});
+
+	test('Explorer drops and clipboard resources attach large lockfiles inline without reading the full file', async () => {
+		const lockfile = URI.file('/project/package-lock.json');
+		const data = new DataTransfer();
+		data.setData('ResourceURLs', JSON.stringify([lockfile.toString()]));
+		prompt.dispatchEvent(new DragEvent('drop', { dataTransfer: data, bubbles: true, cancelable: true }));
+		await completion;
+		assert.deepStrictEqual({ draft: widget.getDraft(), reference: attachments[0]?.reference, content: attachments[0]?.content }, { draft: '[package-lock.json] ', reference: true, content: '' });
+		clipboardResources = [lockfile];
+		prompt.dispatchEvent(new ClipboardEvent('paste', { clipboardData: new DataTransfer(), bubbles: true, cancelable: true }));
+		await completion;
+		assert.strictEqual(attachments.length, 1);
 	});
 
 	test('copied Explorer resources attach while ordinary text replaces the selected text', async () => {

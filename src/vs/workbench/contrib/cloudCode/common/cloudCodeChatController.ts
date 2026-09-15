@@ -76,7 +76,9 @@ export class CloudCodeChatController extends Disposable {
 			}
 			try {
 				if (attachments.length) { this.contextProvider?.assertWorkspaceTrusted(); }
-				this.attachments = mergeCloudCodeAttachments([], attachments);
+				const nextAttachments = mergeCloudCodeAttachments([], attachments);
+				this.useReferenceMode(nextAttachments);
+				this.attachments = nextAttachments;
 			} catch (error) { this.showError(error); }
 			this.view.setAttachments(this.attachments, false);
 			this.saveScheduler.schedule();
@@ -90,7 +92,11 @@ export class CloudCodeChatController extends Disposable {
 		}));
 		this._register(view.onDidChangeMode(mode => {
 			if (!this.running && !this.editBusy && !this.loadingAttachments && !this.hasPendingEdits()) {
-				this.mode = mode;
+				if (mode !== 'agent' && this.attachments.some(attachment => attachment.reference)) {
+					this.view.setError(localize('cloudcode.referenceMode', "Use Agent mode to read attached file references, or remove them before switching modes."));
+				} else {
+					this.mode = mode;
+				}
 			}
 			this.view.setEditMode(this.mode);
 			this.saveScheduler.schedule();
@@ -234,6 +240,16 @@ export class CloudCodeChatController extends Disposable {
 		}
 	}
 
+	private useReferenceMode(attachments: readonly ICloudCodeAttachment[]): void {
+		if (attachments.some(attachment => attachment.reference)) {
+			if (!this.agent) {
+				throw new Error(localize('cloudcode.referenceAgentRequired', "File references require Agent mode. Open a project in the desktop app or attach a smaller code selection."));
+			}
+			this.mode = 'agent';
+			this.view.setEditMode(this.mode);
+		}
+	}
+
 	private async attachContext(read?: () => Promise<readonly ICloudCodeAttachment[]>): Promise<void> {
 		if (!this.contextProvider || this.disposed || this.loadingAttachments || this.editBusy || this.hasPendingEdits() || this.running || this.state.status !== 'signedIn') {
 			return;
@@ -250,7 +266,9 @@ export class CloudCodeChatController extends Disposable {
 			if (attachments.length) {
 				this.contextProvider.assertWorkspaceTrusted();
 			}
-			this.attachments = mergeCloudCodeAttachments(this.attachments, attachments);
+			const nextAttachments = mergeCloudCodeAttachments(this.attachments, attachments);
+			this.useReferenceMode(nextAttachments);
+			this.attachments = nextAttachments;
 		} catch (error) {
 			if (revision === this.attachmentRevision) {
 				this.showError(error);
@@ -266,6 +284,13 @@ export class CloudCodeChatController extends Disposable {
 	private async submit(prompt: string): Promise<void> {
 		prompt = prompt.trim();
 		if (this.disposed || this.state.status !== 'signedIn' || !this.selectedModel || this.loadingModels || this.loadingAttachments || this.editBusy || this.hasPendingEdits() || this.running || !prompt) {
+			return;
+		}
+		try {
+			this.useReferenceMode(this.attachments);
+		} catch (error) {
+			this.view.setDraft(prompt);
+			this.showError(error);
 			return;
 		}
 		if (this.models.find(model => model.id === this.selectedModel)?.supportsImages === false
@@ -626,6 +651,9 @@ export class CloudCodeChatController extends Disposable {
 		this.attachments = chat.attachments;
 		this.historyHasAttachments = this.history.some(message => message.images?.length) || this.messages.some(message => message.attachments?.length);
 		this.mode = chat.mode === 'agent' && !this.agent ? 'ask' : chat.mode;
+		if (this.agent && this.attachments.some(attachment => attachment.reference)) {
+			this.mode = 'agent';
+		}
 		this.selectedModel = this.models.length ? this.models.find(model => model.id === chat.model)?.id ?? this.models[0].id : chat.model;
 		this.view.setMessages(this.messages);
 		this.view.setAttachments(this.attachments, false);

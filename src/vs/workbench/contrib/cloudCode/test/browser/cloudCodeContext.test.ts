@@ -168,25 +168,42 @@ suite('CloudCodeContext', () => {
 		assert.deepStrictEqual({ content: (await context.readAttachments('files'))[0].content, reads, stats }, { content: 'unsaved content', reads: [], stats: [] });
 	});
 
-	test('rejects directories, oversized files and unsupported schemes before reading', async () => {
+	test('rejects directories, oversized external files and unsupported schemes before reading', async () => {
 		diskIsFile = false;
 		await assert.rejects(context.readAttachments('files'), /not a text file/);
 		diskIsFile = true;
 		diskSize = CLOUDCODE_MAX_ATTACHMENT_BYTES + 1;
+		pickedFiles = [URI.file('/outside/large.txt')];
 		await assert.rejects(context.readAttachments('files'), /exceeds the 16 KiB/);
 		pickedFiles = [URI.parse('https://example.com/file.txt')];
 		await assert.rejects(context.readAttachments('files'), /Attach a local or remote text file/);
 		assert.deepStrictEqual(reads, []);
 	});
 
-	test('rejects binary files, file growth during reading and oversized UTF-8 content', async () => {
+	test('references large project files without loading their contents', async () => {
+		diskSize = 791213;
+		const lockfile = URI.file('/project/package-lock.json');
+		assert.deepStrictEqual({ attachments: await context.readResources([lockfile, lockfile]), reads }, {
+			attachments: [{ id: lockfile.toString(), resource: lockfile.toString(), label: 'package-lock.json', content: '', reference: true, languageId: undefined }], reads: []
+		});
+		openModel('x'.repeat(CLOUDCODE_MAX_ATTACHMENT_BYTES + 1));
+		assert.deepStrictEqual((await context.readAttachments('file'))[0], {
+			id: resource.toString(), resource: resource.toString(), label: 'src/example.ts', content: '', reference: true, languageId: 'typescript'
+		});
+	});
+
+	test('rejects binary files and references files that grow or exceed the UTF-8 budget', async () => {
 		readError = new TextFileOperationError('binary', TextFileOperationResult.FILE_IS_BINARY);
 		await assert.rejects(context.readAttachments('files'), /contains binary data/);
 		readError = new FileOperationError('grew', FileOperationResult.FILE_TOO_LARGE);
-		await assert.rejects(context.readAttachments('files'), /exceeds the 16 KiB/);
+		assert.strictEqual((await context.readAttachments('files'))[0].reference, true);
 		readError = undefined;
+		diskContent = '界'.repeat(CLOUDCODE_MAX_ATTACHMENT_BYTES / 2);
+		assert.strictEqual((await context.readAttachments('files'))[0].reference, true);
 		openModel('界'.repeat(CLOUDCODE_MAX_ATTACHMENT_BYTES / 2));
-		await assert.rejects(context.readAttachments('file'), /exceeds the 16 KiB/);
+		assert.strictEqual((await context.readAttachments('file'))[0].reference, true);
+		selection = new Selection(1, 1, 1, activeModel!.getLineMaxColumn(1));
+		await assert.rejects(context.readAttachments('selection'), /exceeds the 16 KiB/);
 		activeModel!.setValue('text\0binary');
 		await assert.rejects(context.readAttachments('file'), /contains binary data/);
 	});

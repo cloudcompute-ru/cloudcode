@@ -56,6 +56,10 @@ class TestSession implements ICloudCodeAgentWorkspaceSession {
 		this.calls.push(call);
 		return this.onExecute(call, token);
 	}
+	resolveReference(resource: string): { root: string; path: string } | undefined {
+		const prefix = 'file:///private/project/';
+		return resource.startsWith(prefix) ? { root: 'root-1', path: resource.slice(prefix.length) } : undefined;
+	}
 	dispose(): void { this.disposed = true; }
 }
 
@@ -90,9 +94,43 @@ suite('CloudCodeAgent', () => {
 		return { service, session, edits, agent, progress, run };
 	}
 
-	function requestData(service: TestService, index: number): { snapshots: { attachment: number; content: string; path: string }[]; toolResults: { result: string }[]; remainingCalls: number } {
+	function requestData(service: TestService, index: number): { snapshots: { attachment: number; content: string; path: string }[]; referencedFiles: { root: string; path: string }[]; toolResults: { result: string }[]; remainingCalls: number } {
 		return JSON.parse(service.requests[index].messages[0].content.split('\n').at(-1)!);
 	}
+
+	test('resolves large file references and replaces them with bounded source after a read', async () => {
+		const reference: ICloudCodeAttachment = { ...attachment('package-lock.json', ''), reference: true };
+		const excerpt = attachment('package-lock.json', '"lockfileVersion": 3', { startLineNumber: 3, startColumn: 1, endLineNumber: 3, endColumn: 21 });
+		const test = setup([
+			{ action: 'tool', tool: 'read', root: 'root-1', path: 'package-lock.json', startLine: 1, endLine: 50 },
+			{ action: 'answer', text: 'This lockfile uses version 3.' }
+		]);
+		test.session.onExecute = async () => ({ text: '', attachment: excerpt });
+		const result = await test.run([reference]);
+		assert.deepStrictEqual({
+			initialReferences: requestData(test.service, 0).referencedFiles,
+			initialSnapshots: requestData(test.service, 0).snapshots,
+			remainingReferences: requestData(test.service, 1).referencedFiles,
+			readContents: requestData(test.service, 1).snapshots.map(item => item.content),
+			attachments: result.attachments,
+			leaksLocalPaths: test.service.requests.some(request => request.messages[0].content.includes('file:///private'))
+		}, {
+			initialReferences: [{ root: 'root-1', path: 'package-lock.json' }], initialSnapshots: [], remainingReferences: [],
+			readContents: [excerpt.content], attachments: [excerpt], leaksLocalPaths: false
+		});
+	});
+
+	test('unread references cannot be used as empty edit targets', async () => {
+		const test = setup([{ action: 'propose', edits: [{ attachment: 1, replacement: 'overwrite file' }] }]);
+		await assert.rejects(test.run([{ ...attachment('package-lock.json', ''), reference: true }]), /valid proposed changes/);
+		assert.deepStrictEqual(test.edits.prepared, []);
+	});
+
+	test('references outside the current workspace stop before inference', async () => {
+		const test = setup();
+		await assert.rejects(test.run([{ ...attachment('lock.json', ''), reference: true, resource: 'file:///another-project/lock.json' }]), /outside this project/);
+		assert.deepStrictEqual(test.service.requests, []);
+	});
 
 	test('progressively discovers and reads code before answering without writing', async () => {
 		const current = attachment();

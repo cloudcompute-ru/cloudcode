@@ -133,6 +133,24 @@ suite('CloudCodeAgentWorkspace', () => {
 		return session.execute({ tool: 'read', root: '1', path, startLine, endLine }, CancellationToken.None);
 	}
 
+	test('resolves references to current workspace paths without bypassing exclusions', () => {
+		const paths = ['file:///project/package-lock.json', 'file:///project/.env', 'file:///project/node_modules/a.json', 'file:///other/lock.json', 'file:///project/lock.json#fragment'];
+		assert.deepStrictEqual(paths.map(path => session.resolveReference(path)), [{ root: '1', path: 'package-lock.json' }, undefined, undefined, undefined, undefined]);
+		trusted = false;
+		assert.throws(() => session.resolveReference(paths[0]), /Trust this workspace/);
+	});
+
+	test('reads bounded excerpts beyond the former 512 KiB file limit and prefers unsaved content', async () => {
+		const uri = addFile('package-lock.json', '{\n  "lockfileVersion": 3,\n' + '  "dependency": {},\n'.repeat(45000) + '}');
+		const saved = (await read('package-lock.json', 1, 2)).attachment;
+		openModel(uri, '{\n  "lockfileVersion": 4,\n' + '  "dependency": {},\n'.repeat(45000) + '}');
+		const unsaved = (await read('package-lock.json', 1, 2)).attachment;
+		assert.deepStrictEqual({ saved: saved?.content, unsaved: unsaved?.content, range: unsaved?.range, reads: reads.length }, {
+			saved: '{\n  "lockfileVersion": 3,', unsaved: '{\n  "lockfileVersion": 4,',
+			range: { startLineNumber: 1, startColumn: 1, endLineNumber: 2, endColumn: 24 }, reads: 1
+		});
+	});
+
 	test('finds files with native ignores and configured exclusions always enabled', async () => {
 		addFile('src/account.ts');
 		addFile('hidden/account.ts');
@@ -215,11 +233,11 @@ suite('CloudCodeAgentWorkspace', () => {
 
 	test('enforces UTF-8 bytes, maximum range length, bounded source files and binary rejection', async () => {
 		addFile('utf8.ts', '界'.repeat(6000));
-		addFile('big.ts', 'x'.repeat(512 * 1024 + 1));
+		addFile('big.ts', 'x'.repeat(16 * 1024 * 1024 + 1));
 		addFile('binary.ts', 'before\0after');
 		addFile('short.ts', 'first\nsecond');
 		await assert.rejects(read('utf8.ts'), /16 KiB/);
-		await assert.rejects(read('big.ts', 1, 1), /512 KiB/);
+		await assert.rejects(read('big.ts', 1, 1), /16 MiB/);
 		await assert.rejects(read('short.ts', 1, 201), /1 to 200 lines/);
 		await assert.rejects(read('short.ts', 1), /1 to 200 lines/);
 		await assert.rejects(read('short.ts', 3, 4), /exceeds the file's 2 lines/);
@@ -254,7 +272,7 @@ suite('CloudCodeAgentWorkspace', () => {
 		textResults = [current, current, hidden, URI.file('/outside/secret.ts')].map(resource => ({ resource, results: [new TextSearchMatch('needle saved secret', range)] }));
 		const result = await session.execute({ tool: 'search', root: '1', query: 'needle' }, CancellationToken.None);
 		assert.deepStrictEqual({ output: JSON.parse(result.text), limits: { files: textQueries[0].maxFileSize, matches: textQueries[0].maxResults }, pattern: textQueries[0].contentPattern.pattern }, {
-			output: { results: [{ path: 'src/current.ts', line: 2, text: 'needle unsaved' }], truncated: false }, limits: { files: 512 * 1024, matches: 20 }, pattern: 'needle',
+			output: { results: [{ path: 'src/current.ts', line: 2, text: 'needle unsaved' }], truncated: false }, limits: { files: 16 * 1024 * 1024, matches: 20 }, pattern: 'needle',
 		});
 	});
 
@@ -311,6 +329,7 @@ suite('CloudCodeAgentWorkspace', () => {
 		addFile('file.ts', 'second source', other);
 		session = disposables.add(service.createSession());
 		const result = await session.execute({ tool: 'read', root: '2', path: 'file.ts' }, CancellationToken.None);
+		assert.deepStrictEqual(session.resolveReference(URI.joinPath(other, 'file.ts').toString()), { root: '2', path: 'file.ts' });
 		assert.deepStrictEqual({ roots: session.roots, label: result.attachment?.label, text: result.text }, {
 			roots: [{ id: '1', name: 'project' }, { id: '2', name: 'second' }], label: 'second/file.ts', text: '{"path":"file.ts","bytes":13}',
 		});
@@ -323,6 +342,7 @@ suite('CloudCodeAgentWorkspace', () => {
 		const uri = addFile('file.ts', 'remote text', remote);
 		session = disposables.add(service.createSession());
 		assert.strictEqual((await read('file.ts')).attachment?.resource, uri.toString());
+		assert.deepStrictEqual(session.resolveReference(uri.toString()), { root: '1', path: 'file.ts' });
 		links.add(uri.toString());
 		await assert.rejects(read('file.ts'), /Symbolic links/);
 	});

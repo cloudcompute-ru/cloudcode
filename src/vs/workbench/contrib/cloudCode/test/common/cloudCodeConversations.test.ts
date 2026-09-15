@@ -16,6 +16,15 @@ suite('CloudCode conversation storage', () => {
 		assert.deepStrictEqual(parseCloudCodeConversations(serializeCloudCodeConversations(archive)), archive);
 	});
 
+	test('persists unread file references and rejects references containing fake snapshots', () => {
+		const reference = { id: 'file', label: 'package-lock.json', resource: 'file:///project/package-lock.json', content: '', reference: true as const };
+		const archive = { conversations: [{ ...chat, attachments: [reference] }], activeId: chat.id };
+		assert.deepStrictEqual(parseCloudCodeConversations(serializeCloudCodeConversations(archive)), archive);
+		for (const invalid of [{ ...reference, content: 'fake snapshot' }, { ...reference, resource: undefined }, { ...reference, reference: false }]) {
+			assert.strictEqual(parseCloudCodeConversations(JSON.stringify({ ...archive, conversations: [{ ...chat, attachments: [invalid] }] })), undefined);
+		}
+	});
+
 	test('round trips inline token positions and rejects references that do not match an attachment', () => {
 		const conversation = { ...chat, draft: 'Review [file.json] next', draftReferences: [{ id: 'file', start: 7, end: 18 }], attachments: [{ id: 'file', label: 'file.json', content: '{}' }] };
 		const archive = { conversations: [conversation], activeId: chat.id };

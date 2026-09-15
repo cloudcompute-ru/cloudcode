@@ -27,7 +27,8 @@ import { CLOUDCODE_MAX_ATTACHMENT_BYTES, ICloudCodeAttachment } from '../common/
 const maxResults = 50;
 const maxSearchMatches = 20;
 const maxResultBytes = 4 * 1024;
-const maxReadFileBytes = 512 * 1024;
+// Local read/search budget. Only bounded excerpts (16 KiB) become inference context.
+const maxReadFileBytes = 16 * 1024 * 1024;
 const maxReadLines = 200;
 const excludedDirectories = ['.git', '.hg', '.svn', 'node_modules', 'vendor', 'dist', 'build', 'out', 'target', 'coverage', '.next', '.nuxt', '.cache', '.venv', 'venv', '.ssh', '.aws', '.azure', '.gnupg', '.kube', '.terraform', '.docker'];
 const excludedFiles = ['.env*', '*.pem', '*.key', '*.p12', '*.pfx', '*.crt', '*.cer', 'id_rsa*', 'id_dsa*', 'id_ecdsa*', 'id_ed25519*', 'credentials*', 'secrets*', 'service-account*.json', '.npmrc', '.netrc', '.pypirc', '*.keystore', '*.jks', '*.sqlite', '*.db', '*.tfstate*'];
@@ -96,6 +97,22 @@ class CloudCodeAgentWorkspaceSession implements ICloudCodeAgentWorkspaceSession 
 		if (this.folders.some(folder => folder.uri.scheme !== Schemas.file && folder.uri.scheme !== Schemas.vscodeRemote)) {
 			throw new CloudCodeAgentWorkspaceError(localize('cloudCode.agent.unsupportedWorkspace', "Agent mode supports local and remote project folders only."));
 		}
+	}
+
+	resolveReference(resource: string): { root: string; path: string } | undefined {
+		this.assertValid();
+		const uri = URI.parse(resource);
+		if (uri.query || uri.fragment) {
+			return undefined;
+		}
+		for (let index = 0; index < this.folders.length; index++) {
+			const root = this.folders[index].uri;
+			const path = this.pathInRoot(root, uri);
+			if (path && isEqual(joinPath(root, path), uri)) {
+				return { root: this.roots[index].id, path };
+			}
+		}
+		return undefined;
 	}
 
 	async execute(call: CloudCodeAgentToolCall, token: CancellationToken): Promise<ICloudCodeAgentToolResult> {
@@ -389,7 +406,7 @@ class CloudCodeAgentWorkspaceSession implements ICloudCodeAgentWorkspaceSession 
 
 	private sizeError(ranged: boolean): Error {
 		return new CloudCodeAgentWorkspaceError(ranged
-			? localize('cloudCode.agent.rangeFileTooLarge', "Agent mode can read ranges from files up to 512 KiB.")
+			? localize('cloudCode.agent.rangeFileTooLarge', "Agent mode can read ranges from files up to 16 MiB.")
 			: localize('cloudCode.agent.readTooLarge', "Read at most 16 KiB at a time. Request a smaller line range."));
 	}
 
