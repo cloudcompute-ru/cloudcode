@@ -113,4 +113,4 @@ The browser suites also cover `cloudCodeAgentWorkspace.test.ts`, `cloudCodeConte
 
 ## Windows distribution
 
-See [Build CloudCode for Windows](docs/cloudcode-windows-build.md) for the standalone application, user installer and ZIP commands, including their output paths and Windows SDK requirements.
+Run `scripts\build-cloudcode-win32.bat` from a Visual Studio 2022 developer terminal to create the Windows user installer, or add `--zip` to produce a ZIP too. See [Build CloudCode for Windows](docs/cloudcode-windows-build.md) for prerequisites, output paths and the manual steps.

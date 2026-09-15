@@ -10,6 +10,31 @@ Run these commands on Windows x64 from the repository root, for example `C:\code
 
 Use Developer PowerShell for VS 2022. Inno Setup is already included as an npm dependency; a separate installation is unnecessary.
 
+## One-command build
+
+After pulling the desired changes, run this from Developer PowerShell or Developer Command Prompt for VS 2022:
+
+```powershell
+.\scripts\build-cloudcode-win32.bat
+```
+
+It locates the Windows SDK signing utility, runs `npm ci`, generates the policy files, compiles and packages CloudCode, and creates the user installer. It stops at the first failure, names the failed step, and returns a nonzero exit code. It builds the current checkout, including local changes; it does not switch branches or pull updates.
+
+The download files are:
+
+- `.build\CloudCodeSetup-x64.exe`
+- `.build\CloudCodeSetup-x64.exe.sha256`
+
+To create a ZIP and its checksum as well:
+
+```powershell
+.\scripts\build-cloudcode-win32.bat --zip
+```
+
+This also produces `.build\CloudCode-win-x64.zip` and `.build\CloudCode-win-x64.zip.sha256`. Run the script from a terminal so the output stays visible. Close running CloudCode windows and watch tasks first. Test the resulting app and installer before publishing; the script does not launch the app or upload artifacts. Existing output files after a failed run may be from an earlier build.
+
+The manual commands below are the same build steps and remain useful for troubleshooting. The unsigned-installer and update-delivery notes apply to both methods.
+
 ## Prepare the source
 
 After merging the desired PR:
