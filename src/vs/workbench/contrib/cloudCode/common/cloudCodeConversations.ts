@@ -6,7 +6,7 @@
 import { localize } from '../../../../nls.js';
 import { ICloudCodeAccount, ICloudCodeMessage } from '../../../../platform/cloudCode/common/cloudCode.js';
 import { cloudCodeImagesWithinLimit } from '../../../../platform/cloudCode/common/cloudCodeImages.js';
-import { ICloudCodeChatMessage } from './cloudCodeChat.js';
+import { ICloudCodeChatMessage, ICloudCodeDraftReference } from './cloudCodeChat.js';
 import { ICloudCodeAttachment, mergeCloudCodeAttachments } from './cloudCodeChatContext.js';
 import { CloudCodeChatMode } from './cloudCodeEdits.js';
 
@@ -17,6 +17,7 @@ export interface ICloudCodeConversation {
 	readonly history: readonly ICloudCodeMessage[];
 	readonly attachments: readonly ICloudCodeAttachment[];
 	readonly draft: string;
+	readonly draftReferences?: readonly ICloudCodeDraftReference[];
 	readonly mode: CloudCodeChatMode;
 	readonly model?: string;
 }
@@ -121,5 +122,17 @@ function isConversation(value: unknown): value is ICloudCodeConversation {
 		&& (message.images === undefined || message.role === 'user' && Array.isArray(message.images) && message.images.every(image => isObject(image) && typeof image.dataUrl === 'string' && cloudCodeImagesWithinLimit([{ dataUrl: image.dataUrl }]))))) {
 		return false;
 	}
-	return Array.isArray(value.attachments) && value.attachments.length <= 5 && value.attachments.every(isAttachment);
+	if (!Array.isArray(value.attachments) || value.attachments.length > 5 || !value.attachments.every(isAttachment)) { return false; }
+	if (value.draftReferences !== undefined) {
+		if (!Array.isArray(value.draftReferences) || value.draftReferences.length > 100) { return false; }
+		let end = 0;
+		for (const reference of value.draftReferences) {
+			if (!isObject(reference) || typeof reference.id !== 'string' || typeof reference.start !== 'number' || typeof reference.end !== 'number'
+				|| !Number.isSafeInteger(reference.start) || !Number.isSafeInteger(reference.end) || reference.start < end || reference.end <= reference.start || reference.end > value.draft.length) { return false; }
+			const attachment = value.attachments.find(attachment => attachment.id === reference.id);
+			if (!attachment || value.draft.slice(reference.start, reference.end) !== `[${attachment.label}]`) { return false; }
+			end = reference.end;
+		}
+	}
+	return true;
 }

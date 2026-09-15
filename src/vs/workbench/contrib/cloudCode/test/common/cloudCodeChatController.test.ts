@@ -18,6 +18,9 @@ import { ICloudCodeConversationStorage } from '../../common/cloudCodeConversatio
 import { ICloudCodeAgent } from '../../common/cloudCodeAgent.js';
 
 class TestView extends Disposable implements ICloudCodeChatView {
+	readonly draftAttachments = this._register(new Emitter<readonly ICloudCodeAttachment[]>());
+	readonly onDidChangeDraftAttachments = this.draftAttachments.event;
+	getDraftReferences(): [] { return []; }
 	readonly selectConversation = this._register(new Emitter<string>());
 	readonly onDidSelectConversation = this.selectConversation.event;
 	readonly changeDraft = this._register(new Emitter<void>());
