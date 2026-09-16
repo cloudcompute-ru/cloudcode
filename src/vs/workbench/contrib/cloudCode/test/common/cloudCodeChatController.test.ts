@@ -166,6 +166,7 @@ class TestService extends Disposable implements ICloudCodeService {
 		return result.p;
 	}
 	async cancelChat(id: string): Promise<void> { this.cancelled.push(id); }
+	async reportAgentError(): Promise<void> { }
 }
 
 suite('CloudCodeChatController', () => {

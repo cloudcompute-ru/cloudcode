@@ -22,6 +22,7 @@ import { registerIcon } from '../../../../platform/theme/common/iconRegistry.js'
 import { ViewPaneContainer } from '../../../browser/parts/views/viewPaneContainer.js';
 import { Extensions, IViewContainersRegistry, IViewsRegistry, ViewContainerLocation } from '../../../common/views.js';
 import { CloudCodeChatViewPane } from './cloudCodeChatViewPane.js';
+import { CLOUDCODE_ERROR_REPORTING_SETTING } from '../../../../platform/cloudCode/common/cloudCodeDiagnostics.js';
 
 const containerId = 'workbench.view.cloudCodeChat';
 const title = localize2('cloudCode.chat.title', "CloudCode Chat");
@@ -31,6 +32,12 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 	id: 'cloudcode',
 	title: localize('cloudCode.configuration', "CloudCode"),
 	properties: {
+		[CLOUDCODE_ERROR_REPORTING_SETTING]: {
+			type: 'boolean',
+			default: true,
+			scope: ConfigurationScope.APPLICATION,
+			description: localize('cloudCode.errorReporting', "Send technical Agent error diagnostics to CloudCompute when reporting is configured. Reports exclude prompts, source code, model responses and account details. Requires the telemetry level to permit error reporting."),
+		},
 		[CLOUDCODE_SERVER_SETTING]: {
 			type: 'string',
 			default: CLOUDCODE_DEFAULT_SERVER,

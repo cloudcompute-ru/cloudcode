@@ -20,6 +20,7 @@ class CloudCodeWebService implements ICloudCodeService {
 	async getModels(): Promise<never> { return this.signIn(); }
 	async streamChat(): Promise<never> { return this.signIn(); }
 	async cancelChat(): Promise<void> { }
+	async reportAgentError(): Promise<void> { }
 }
 
 registerSingleton(ICloudCodeService, CloudCodeWebService, InstantiationType.Delayed);

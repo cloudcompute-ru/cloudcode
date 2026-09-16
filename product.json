@@ -2,6 +2,7 @@
 	"nameShort": "CloudCode",
 	"nameLong": "CloudCode",
 	"applicationName": "cloudcode",
+	"cloudCodeSentryDsn": "",
 	"dataFolderName": ".cloudcode",
 	"sharedDataFolderName": ".cloudcode-shared",
 	"win32MutexName": "cloudcode",
