@@ -102,4 +102,19 @@ Users extract the ZIP and run `CloudCode.exe`. Include the entire folder, includ
 
 Automatic update delivery is not configured by these build commands. For the initial downloadable release, users can install a newer installer manually.
 
+## Rebuild, upgrade and reinstall
+
+The process is repeatable. After merging a change, close CloudCode and run:
+
+```powershell
+git pull --ff-only
+.\scripts\build-cloudcode-win32.bat --zip
+```
+
+Run the newly generated `.build\CloudCodeSetup-x64.exe` over the existing installation. Use the same Windows account and x64 user-installer target. The installer replaces the application files, including when testing another build of the same version. Uninstalling first is optional.
+
+Settings, extensions and locally saved chats live outside the installation directory. The normal uninstaller leaves those data folders in place, so uninstalling and reinstalling is not a clean profile reset. Development and packaged builds can use different profiles. Keep the application IDs, data-folder names and installer target stable between releases so subsequent installers recognize the same application.
+
+The cloud logo assets are checked in and included by the existing build tasks; no extra icon-generation step is required. See [CloudCode branding](cloudcode-branding.md) to change the design. Windows may retain an older pinned shortcut icon after an update: unpin the shortcut, launch the updated installed application, and pin it again.
+
 The commands are based on this fork's checked-in build tasks. The full Windows packaging and installer run must be performed on Windows; browser and TypeScript validation alone do not validate an installer.

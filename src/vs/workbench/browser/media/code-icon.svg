@@ -1,1 +1,8 @@
-<svg id="Layer_1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024"><style>.st0{fill:#f6f6f6;fill-opacity:0}.st1{fill:#fff}.st2{fill:#167abf}</style><path class="st0" d="M1024 1024H0V0h1024v1024z"/><path class="st1" d="M1024 85.333v853.333H0V85.333h1024z"/><path class="st2" d="M0 85.333h298.667v853.333H0V85.333zm1024 0v853.333H384V85.333h640zm-554.667 160h341.333v-64H469.333v64zm341.334 533.334H469.333v64h341.333l.001-64zm128-149.334H597.333v64h341.333l.001-64zm0-149.333H597.333v64h341.333l.001-64zm0-149.333H597.333v64h341.333l.001-64z"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+	<!-- Copyright (c) Microsoft Corporation. All rights reserved. Licensed under the MIT License. -->
+	<g fill="#ffffff" stroke="#2b377e" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">
+		<path id="cloud" d="M73.5 101C58 110 37 103 29 85C16 88 5 79 5 67C5 56 11 48 21 44C24 32 35 26 47 29C50 15 60 7 73 7C89 7 99 19 99 35C114 35 124 47 124 61C124 68 122 73 118 79"/>
+		<circle id="badge" cx="99" cy="96" r="26"/>
+		<path id="arrows" d="M87 89L94 83V109M105 109V83L112 89" fill="none"/>
+	</g>
+</svg>
