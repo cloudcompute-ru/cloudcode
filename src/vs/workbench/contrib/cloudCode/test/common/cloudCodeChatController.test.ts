@@ -124,13 +124,14 @@ class TestAgent implements ICloudCodeAgent {
 		prompt: string;
 		attachments: readonly ICloudCodeAttachment[];
 		model: string;
+		history: readonly ICloudCodeMessage[];
 		token: CancellationToken;
 		onProgress: Parameters<ICloudCodeAgent['run']>[4];
 		result: DeferredPromise<Awaited<ReturnType<ICloudCodeAgent['run']>>>;
 	}[] = [];
-	run(prompt: string, attachments: readonly ICloudCodeAttachment[], model: string, token: CancellationToken, onProgress: Parameters<ICloudCodeAgent['run']>[4]): ReturnType<ICloudCodeAgent['run']> {
+	run(prompt: string, attachments: readonly ICloudCodeAttachment[], model: string, token: CancellationToken, onProgress: Parameters<ICloudCodeAgent['run']>[4], history: readonly ICloudCodeMessage[] = []): ReturnType<ICloudCodeAgent['run']> {
 		const result = new DeferredPromise<Awaited<ReturnType<ICloudCodeAgent['run']>>>();
-		this.requests.push({ prompt, attachments, model, token, onProgress, result });
+		this.requests.push({ prompt, attachments, model, history, token, onProgress, result });
 		return result.p;
 	}
 }
@@ -165,6 +166,7 @@ class TestService extends Disposable implements ICloudCodeService {
 		this.requests.push({ id, model, messages, result });
 		return result.p;
 	}
+	async streamAgent(): ReturnType<ICloudCodeService['streamAgent']> { throw new Error('Unexpected direct Agent request'); }
 	async cancelChat(id: string): Promise<void> { this.cancelled.push(id); }
 	async reportAgentError(): Promise<void> { }
 }
@@ -779,7 +781,7 @@ suite('CloudCodeChatController', () => {
 		assert.deepStrictEqual({ proposals: view.proposals, applications: editProvider.applications }, { proposals: [], applications: [] });
 	});
 
-	test('accepted edits clear obsolete source history and edit requests use only fresh targets', async () => {
+	test('accepted edits retain discussion without obsolete source and edit requests use only fresh targets', async () => {
 		await attach([editableAttachment]);
 		view.submit.fire('Explain the current version');
 		const first = service.requests[0];
@@ -794,7 +796,10 @@ suite('CloudCodeChatController', () => {
 		await settleEdits();
 		view.changeMode.fire('ask');
 		view.submit.fire('Start a fresh discussion');
-		assert.deepStrictEqual(service.requests[2].messages, [{ role: 'user', content: 'Start a fresh discussion' }]);
+		const history = service.requests[2].messages;
+		assert.deepStrictEqual({ last: history.at(-1), sourceReplayed: JSON.stringify(history).includes(editableAttachment.content), intent: history[0].content, outcome: history.at(-2)?.content.includes('Applied the proposed change to main.ts') }, {
+			last: { role: 'user', content: 'Start a fresh discussion' }, sourceReplayed: false, intent: 'Explain the current version\n\nPreviously referenced files (read again for current contents): [\"main.ts\"]', outcome: true
+		});
 	});
 
 		test('Agent mode explores without attachments and presents progress without exposing protocol responses', async () => {
@@ -819,7 +824,7 @@ suite('CloudCodeChatController', () => {
 		});
 	});
 
-	test('completed Agent answers retain discovered source for Ask follow-ups', async () => {
+	test('completed Agent answers retain discussion and file names without source snapshots for Ask follow-ups', async () => {
 		view.changeMode.fire('agent');
 		await attach([editableAttachment]);
 		view.submit.fire('Explain this implementation');
@@ -830,10 +835,121 @@ suite('CloudCodeChatController', () => {
 		view.changeMode.fire('ask');
 		view.submit.fire('Why is it one?');
 		assert.deepStrictEqual(service.requests[0].messages, [
-			{ role: 'user', content: formatCloudCodePrompt('Explain this implementation', [editableAttachment]) },
-			{ role: 'assistant', content: 'The current version is one.' },
+			{ role: 'user', content: 'Explain this implementation\n\nPreviously referenced files (read again for current contents): [\"main.ts\"]' },
+			{ role: 'assistant', content: 'The current version is one.\n\nPreviously referenced files (read again for current contents): [\"main.ts\"]' },
 			{ role: 'user', content: 'Why is it one?' }
 		]);
+	});
+
+	test('Agent follow-ups retain completed Ask and Agent discussion but only explicit current attachments', async () => {
+		await attach([editableAttachment]);
+		view.submit.fire('Explain this code');
+		service.deltas.fire({ requestId: service.requests[0].id, text: 'It declares a version.' });
+		await service.requests[0].result.complete({ cancelled: false });
+		view.changeMode.fire('agent');
+		view.submit.fire('Where is that version used?');
+		await agent.requests[0].result.complete({ text: 'The UI reads it.', attachments: [editableAttachment], edits: [] });
+		await settleEdits();
+		const current: ICloudCodeAttachment = { id: 'file:///project/ui.ts', resource: 'file:///project/ui.ts', label: 'ui.ts', content: 'render(version);' };
+		await attach([current]);
+		view.submit.fire('Add validation there');
+		assert.deepStrictEqual({ history: agent.requests[1].history, attachments: agent.requests[1].attachments }, {
+			history: [
+				{ role: 'user', content: 'Explain this code\n\nPreviously referenced files (read again for current contents): ["main.ts"]' },
+				{ role: 'assistant', content: 'It declares a version.' },
+				{ role: 'user', content: 'Where is that version used?' },
+				{ role: 'assistant', content: 'The UI reads it.\n\nPreviously referenced files (read again for current contents): ["main.ts"]' }
+			], attachments: [current]
+		});
+		await agent.requests[1].result.complete({ text: 'Done reviewing.', attachments: [], edits: [] });
+		await settleEdits();
+	});
+
+	for (const outcome of ['failed', 'stopped'] as const) {
+		test(`Agent continuity excludes ${outcome} turns without losing earlier completed intent`, async () => {
+			view.changeMode.fire('agent');
+			view.submit.fire('Add a status filter');
+			await agent.requests[0].result.complete({ text: 'The listing uses routes.ts.', attachments: [], edits: [] });
+			await settleEdits();
+			view.submit.fire('Incomplete instruction');
+			if (outcome === 'failed') {
+				await agent.requests[1].result.error(new Error('Connection lost'));
+			} else {
+				view.stop.fire();
+				await agent.requests[1].result.complete({ text: 'Late answer', attachments: [], edits: [] });
+			}
+			await settleEdits();
+			view.submit.fire('Continue with tests');
+			assert.deepStrictEqual(agent.requests[2].history, [
+				{ role: 'user', content: 'Add a status filter' }, { role: 'assistant', content: 'The listing uses routes.ts.' }
+			]);
+			await agent.requests[2].result.complete({ text: 'Reviewed.', attachments: [], edits: [] });
+			await settleEdits();
+		});
+	}
+
+	test('Agent proposal history records accepted and rejected files without applying rejected content', async () => {
+		view.changeMode.fire('agent');
+		view.submit.fire('Update both versions');
+		const other = { ...editableAttachment, id: 'other', label: 'other.ts', resource: 'file:///project/other.ts' };
+		await agent.requests[0].result.complete({ text: 'Updated both versions.', attachments: [editableAttachment, other], edits: [editableAttachment, other].map(attachment => ({ target: { token: attachment.id, attachment }, replacement: 'new source content' })) });
+		await settleEdits();
+		const [accepted, rejected] = view.proposals;
+		view.reviewEdit.fire({ id: accepted.id, action: 'preview' });
+		await settleEdits();
+		view.reviewEdit.fire({ id: accepted.id, action: 'accept' });
+		await settleEdits();
+		view.reviewEdit.fire({ id: rejected.id, action: 'reject' });
+		await settleEdits();
+		view.submit.fire('Now add validation');
+		assert.deepStrictEqual({ history: agent.requests[1].history, applied: editProvider.applications.map(edit => edit.target.attachment.label), attachments: agent.requests[1].attachments }, {
+			history: [
+				{ role: 'user', content: 'Update both versions' },
+				{ role: 'assistant', content: 'Proposal only; no edits were applied by this response. Later review outcomes are recorded separately.\nUpdated both versions.\n\nPreviously referenced files (read again for current contents): ["main.ts","other.ts"]\n\nApplied the proposed change to main.ts in the editor. It can be undone with Undo. Read the file again before making further changes.\n\nRejected the proposed change to other.ts. This proposal was not applied.' }
+			], applied: ['main.ts'], attachments: []
+		});
+		await agent.requests[1].result.complete({ text: 'Reviewed.', attachments: [], edits: [] });
+		await settleEdits();
+	});
+
+	test('restored Agent proposal discussion is isolated from new chats and other accounts and teams', async () => {
+		controller.dispose();
+		const values = new Map<string, string>();
+		const storage: ICloudCodeConversationStorage = { scope: account => `${account.user.id}:${account.team.id}`, read: scope => values.get(scope), write: (scope, value) => { values.set(scope, value); } };
+		controller = disposables.add(new CloudCodeChatController(view, contextProvider, editProvider, agent, storage, service));
+		await controller.initialize();
+		view.submit.fire('Fix the version');
+		await agent.requests[0].result.complete({ text: 'Proposed version update.', attachments: [editableAttachment], edits: [{ target: { token: 'old-target', attachment: editableAttachment }, replacement: 'obsolete replacement' }] });
+		await settleEdits();
+		controller.dispose();
+		controller = disposables.add(new CloudCodeChatController(view, contextProvider, editProvider, agent, storage, service));
+		await controller.initialize();
+		view.submit.fire('Continue');
+		const restored = agent.requests[1].history;
+		assert.deepStrictEqual({ intent: restored[0], proposal: restored[1].content.startsWith('Proposal only;'), discarded: restored[1].content.includes('unreviewed changes were discarded'), attachments: agent.requests[1].attachments, proposals: view.proposals }, {
+			intent: { role: 'user', content: 'Fix the version' }, proposal: true, discarded: true, attachments: [], proposals: []
+		});
+		await agent.requests[1].result.complete({ text: 'Read the fresh version.', attachments: [], edits: [] });
+		await settleEdits();
+		const oldChat = view.activeChat;
+		view.newConversation.fire();
+		view.submit.fire('Separate task');
+		assert.deepStrictEqual(agent.requests[2].history, []);
+		await agent.requests[2].result.complete({ text: 'Separate answer.', attachments: [], edits: [] });
+		await settleEdits();
+		view.selectConversation.fire(oldChat);
+		for (const account of [
+			{ ...signedIn.account!, team: { id: 2, name: 'Another team' } },
+			{ ...signedIn.account!, user: { id: 2, name: 'Another user', email: 'other@example.com' } }
+		]) {
+			service.stateEmitter.fire({ ...signedIn, account });
+			await settleEdits();
+			view.submit.fire('Private task');
+			const request = agent.requests.at(-1)!;
+			assert.deepStrictEqual(request.history, []);
+			await request.result.complete({ text: 'Separate account answer.', attachments: [], edits: [] });
+			await settleEdits();
+		}
 	});
 
 	test('Agent proposals require the existing preview and approval flow before applying source', async () => {

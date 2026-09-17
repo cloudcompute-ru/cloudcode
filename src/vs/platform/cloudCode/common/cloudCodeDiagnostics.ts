@@ -5,7 +5,7 @@
 
 export const CLOUDCODE_ERROR_REPORTING_SETTING = 'cloudcode.errorReporting.enabled';
 
-export const cloudCodeAgentErrorCodes = ['invalid_json', 'invalid_envelope', 'invalid_root', 'invalid_tool', 'invalid_path', 'invalid_range', 'invalid_result', 'response_too_large', 'call_limit', 'timeout', 'operation_failed'] as const;
+export const cloudCodeAgentErrorCodes = ['invalid_json', 'invalid_envelope', 'invalid_root', 'invalid_tool', 'invalid_path', 'invalid_range', 'invalid_result', 'response_too_large', 'response_truncated', 'call_limit', 'timeout', 'operation_failed'] as const;
 export type CloudCodeAgentErrorCode = typeof cloudCodeAgentErrorCodes[number];
 export const cloudCodeAgentStages = ['workspace', 'context', 'inference', 'parse', 'tool', 'edits'] as const;
 export type CloudCodeAgentStage = typeof cloudCodeAgentStages[number];

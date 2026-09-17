@@ -16,6 +16,15 @@ suite('CloudCode conversation storage', () => {
 		assert.deepStrictEqual(parseCloudCodeConversations(serializeCloudCodeConversations(archive)), archive);
 	});
 
+	test('round trips proposal metadata and rejects malformed proposal states', () => {
+		const conversation = { ...chat, messages: [{ role: 'user' as const, text: 'Fix the version' }, { role: 'assistant' as const, text: 'Proposed an update.', proposedEdits: true }] };
+		const archive = { conversations: [conversation], activeId: chat.id };
+		assert.deepStrictEqual(parseCloudCodeConversations(serializeCloudCodeConversations(archive)), archive);
+		for (const message of [{ role: 'assistant', text: 'Update', proposedEdits: 'applied' }, { role: 'user', text: 'Update', proposedEdits: true }]) {
+			assert.strictEqual(parseCloudCodeConversations(JSON.stringify({ ...archive, conversations: [{ ...chat, messages: [message] }] })), undefined);
+		}
+	});
+
 	test('persists unread file references and rejects references containing fake snapshots', () => {
 		const reference = { id: 'file', label: 'package-lock.json', resource: 'file:///project/package-lock.json', content: '', reference: true as const };
 		const archive = { conversations: [{ ...chat, attachments: [reference] }], activeId: chat.id };

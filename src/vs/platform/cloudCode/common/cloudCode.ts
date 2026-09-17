@@ -16,6 +16,8 @@ export const CLOUDCODE_DEFAULT_SERVER = 'https://app.cloudcompute.ru';
 export const CLOUDCODE_MAX_MESSAGES = 32;
 export const CLOUDCODE_MAX_MESSAGE_LENGTH = 32768;
 export const CLOUDCODE_MAX_CONTEXT_BYTES = 65536;
+export const CLOUDCODE_MAX_AGENT_MESSAGES = 128;
+export const CLOUDCODE_MAX_AGENT_CONTEXT_BYTES = 262144;
 
 export interface ICloudCodeAccount {
 	readonly user: { readonly id: number; readonly name: string; readonly email: string };
@@ -46,6 +48,38 @@ export interface ICloudCodeChatDelta {
 	readonly text: string;
 }
 
+export interface ICloudCodeToolCall {
+	readonly id: string;
+	readonly name: string;
+	readonly arguments: string;
+}
+
+export interface ICloudCodeToolDefinition {
+	readonly name: string;
+	readonly description: string;
+	readonly parameters: Record<string, unknown>;
+}
+
+export interface ICloudCodeAgentMessage {
+	readonly role: 'system' | 'user' | 'assistant' | 'tool';
+	readonly content: string;
+	readonly images?: readonly ICloudCodeImage[];
+	readonly toolCalls?: readonly ICloudCodeToolCall[];
+	readonly toolCallId?: string;
+	/** Provider continuation data; never shown or persisted as chat content. */
+	readonly reasoningContent?: string;
+	readonly reasoningDetails?: readonly Record<string, unknown>[];
+}
+
+export interface ICloudCodeAgentResponse {
+	readonly cancelled: boolean;
+	readonly text: string;
+	readonly toolCalls: readonly ICloudCodeToolCall[];
+	readonly finishReason?: string;
+	readonly reasoningContent?: string;
+	readonly reasoningDetails?: readonly Record<string, unknown>[];
+}
+
 /** Desktop-only OAuth and inference transport. Credentials stay in the shared process. */
 export interface ICloudCodeService {
 	readonly _serviceBrand: undefined;
@@ -57,6 +91,7 @@ export interface ICloudCodeService {
 	signOut(): Promise<void>;
 	getModels(): Promise<readonly ICloudCodeModel[]>;
 	streamChat(requestId: string, model: string, messages: readonly ICloudCodeMessage[]): Promise<{ cancelled: boolean }>;
+	streamAgent(requestId: string, model: string, messages: readonly ICloudCodeAgentMessage[], tools: readonly ICloudCodeToolDefinition[], maxOutputTokens?: number): Promise<ICloudCodeAgentResponse>;
 	cancelChat(requestId: string): Promise<void>;
 	reportAgentError(diagnostic: ICloudCodeAgentDiagnostic): Promise<void>;
 }

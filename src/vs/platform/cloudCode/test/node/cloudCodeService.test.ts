@@ -88,6 +88,55 @@ suite('CloudCode service', () => {
 		]);
 	});
 
+	const agentTools = [{ name: 'read', description: 'Read a file', parameters: { type: 'object', properties: { path: { type: 'string' } } } }];
+
+	test('Agent uses native tools and collects responses without broadcasting executable control text', async () => {
+		const body = 'data: {"choices":[{"delta":{"reasoning_content":"hidden provider continuation","reasoning_details":[{"type":"reasoning.encrypted","data":"encrypted-block"}],"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"read","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}\n\ndata: [DONE]\n\n';
+		const { service, requests } = setupService(async () => ({ res: { statusCode: 200, headers: { 'content-type': 'text/event-stream' } }, stream: bufferToStream(VSBuffer.fromString(body)) }), await savedSession());
+		const deltas: string[] = [];
+		store.add(service.onDidReceiveChatDelta(delta => deltas.push(delta.text)));
+		const response = await service.streamAgent('agent', 'test-model', [{ role: 'user', content: 'Read a file' }], agentTools);
+		assert.deepStrictEqual({ response, deltas, payload: JSON.parse(requests[0].data!) }, {
+			response: { cancelled: false, text: '', toolCalls: [{ id: 'call_1', name: 'read', arguments: '{}' }], finishReason: 'tool_calls', reasoningContent: 'hidden provider continuation', reasoningDetails: [{ type: 'reasoning.encrypted', data: 'encrypted-block' }] }, deltas: [],
+			payload: { model: 'test-model', messages: [{ role: 'user', content: 'Read a file' }], tools: [{ type: 'function', function: agentTools[0] }], tool_choice: 'auto', parallel_tool_calls: false, stream: true, max_tokens: 4096, stream_options: { include_usage: true } }
+		});
+	});
+
+	test('Stop discards Agent control fragments and prevents late completion', async () => {
+		const response = newWriteableBufferStream();
+		const started = new DeferredPromise<void>();
+		const { service } = setupService(async () => { void started.complete(); return { res: { statusCode: 200, headers: { 'content-type': 'text/event-stream' } }, stream: response }; }, await savedSession());
+		const result = service.streamAgent('agent', 'test-model', [{ role: 'user', content: 'Read a file' }], agentTools);
+		await started.p;
+		response.write(VSBuffer.fromString('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"read","arguments":"{"}}]}}]}\n\n'));
+		await service.cancelChat('agent');
+		response.end(VSBuffer.fromString('data: [DONE]\n\n'));
+		assert.deepStrictEqual(await result, { cancelled: true, text: '', toolCalls: [] });
+	});
+
+	test('a stopped Agent request never starts inference after credential refresh', async () => {
+		const refreshStarted = new DeferredPromise<void>();
+		const refreshResult = new DeferredPromise<IRequestContext>();
+		const { service, requests } = setupService(async options => {
+			if (options.url?.endsWith('/oauth/token')) { void refreshStarted.complete(); return refreshResult.p; }
+			return json({ data: [] });
+		}, await savedSession(true));
+		const result = service.streamAgent('agent', 'test-model', [{ role: 'user', content: 'Read a file' }], agentTools);
+		await refreshStarted.p;
+		await service.cancelChat('agent');
+		await refreshResult.complete(json(grant));
+		await service.getModels();
+		assert.deepStrictEqual({ result: await result, inferenceRequests: requests.filter(item => item.url?.endsWith('/chat/completions')).length }, { result: { cancelled: true, text: '', toolCalls: [] }, inferenceRequests: 0 });
+	});
+
+	test('Agent rejects invalid IPC payloads before network and never retries a paid interrupted stream', async () => {
+		const { service, requests } = setupService(async () => ({ res: { statusCode: 200, headers: { 'content-type': 'text/event-stream' } }, stream: bufferToStream(VSBuffer.fromString('data: {"choices":[{"delta":{"content":"partial"}}]}\n\n')) }), await savedSession());
+		await assert.rejects(service.streamAgent('invalid', 'test-model', [{ role: 'tool', content: 'orphan', toolCallId: 'missing' }], agentTools), /Agent request/);
+		assert.strictEqual(requests.length, 0);
+		await assert.rejects(service.streamAgent('interrupted', 'test-model', [{ role: 'user', content: 'Read a file' }], agentTools), /interrupted/);
+		assert.strictEqual(requests.length, 1);
+	});
+
 	test('rejects external image URLs and assistant images before any network request', async () => {
 		const { service, requests } = setupService(async () => { throw new Error('Unexpected request'); });
 		await assert.rejects(service.streamChat('external', 'test-model', [{ role: 'user', content: 'Image', images: [{ dataUrl: 'https://example.com/private.png' }] }]));
