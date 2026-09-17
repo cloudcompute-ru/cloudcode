@@ -25,6 +25,7 @@ import { CloudCodeAttachmentInput } from './cloudCodeAttachmentInput.js';
 import { CloudCodeContext } from './cloudCodeContext.js';
 import { CloudCodeEditWorkspace } from './cloudCodeEditWorkspace.js';
 import { CloudCodeAgentWorkspace } from './cloudCodeAgentWorkspace.js';
+import { CloudCodeEditingWorkspaceFactory } from './cloudCodeEditingWorkspace.js';
 import { CloudCodeAgent } from '../common/cloudCodeAgent.js';
 import { CloudCodeChatMode } from '../common/cloudCodeEdits.js';
 import { CloudCodeAttachmentKind } from '../common/cloudCodeChatContext.js';
@@ -69,7 +70,9 @@ export class CloudCodeChatViewPane extends ViewPane {
 		this.context = instantiationService.createInstance(CloudCodeContext);
 		this.attachmentInput = instantiationService.createInstance(CloudCodeAttachmentInput, this.context);
 		this.editWorkspace = this._register(instantiationService.createInstance(CloudCodeEditWorkspace));
-		this.agent = new CloudCodeAgent(cloudCodeService, instantiationService.createInstance(CloudCodeAgentWorkspace), this.editWorkspace);
+		const agentWorkspace = instantiationService.createInstance(CloudCodeAgentWorkspace);
+		const editingWorkspace = instantiationService.createInstance(CloudCodeEditingWorkspaceFactory, agentWorkspace);
+		this.agent = new CloudCodeAgent(cloudCodeService, agentWorkspace, this.editWorkspace, editingWorkspace);
 		this._register(lifecycleService.onWillShutdown(event => {
 			if (this.controller) {
 				event.join(this.controller.shutdown(), { id: 'cloudcode.chat', label: localize('cloudcode.stoppingChat', "Stopping CloudCode chat") });
@@ -90,7 +93,7 @@ export class CloudCodeChatViewPane extends ViewPane {
 			return picked?.id;
 		}, async mode => {
 			const items: { id: CloudCodeChatMode; label: string; description: string }[] = [
-				{ id: 'agent', label: localize('cloudcode.agentMode', "Agent"), description: localize('cloudcode.agentModeDetail', "Search the project, read files, and propose changes") },
+				{ id: 'agent', label: localize('cloudcode.agentMode', "Agent"), description: localize('cloudcode.agentModeDetail', "Search the project and prepare changes across files for review") },
 				{ id: 'ask', label: localize('cloudcode.askMode', "Ask"), description: localize('cloudcode.askModeDetail', "Answer using messages and attached content; no project search or edits") },
 				{ id: 'edit', label: localize('cloudcode.proposeEdits', "Propose Edits"), description: localize('cloudcode.editModeDetail', "Change only the files or selections you attach") },
 			];

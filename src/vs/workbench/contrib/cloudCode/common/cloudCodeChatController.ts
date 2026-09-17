@@ -16,6 +16,7 @@ import { cloudCodeUserMessage, formatCloudCodePrompt, ICloudCodeAttachment, IClo
 import { ICloudCodeChatMessage, ICloudCodeChatView } from './cloudCodeChat.js';
 import { ICloudCodeAgent } from './cloudCodeAgent.js';
 import { CloudCodeChatMode, formatCloudCodeEditPrompt, ICloudCodeEditProposal, ICloudCodeEditProvider, ICloudCodeEditTarget, parseCloudCodeEdits } from './cloudCodeEdits.js';
+import { CloudCodeEditingSessionAction, ICloudCodeEditingSession } from './cloudCodeEditingSession.js';
 
 /** Owns one window's conversation and coordinates the shared native transport. */
 export class CloudCodeChatController extends Disposable {
@@ -36,6 +37,7 @@ export class CloudCodeChatController extends Disposable {
 	private editProposals: readonly ICloudCodeEditProposal[] = [];
 	private editBusy = false;
 	private editRevision = 0;
+	private readonly editingSessions = new Map<string, { session: ICloudCodeEditingSession; title: string; error?: string }>();
 	private activeRequest: { id: string; message: ICloudCodeMessage; text: string; hasAttachments: boolean; targets?: readonly ICloudCodeEditTarget[] } | undefined;
 	private activeAgent: { source: CancellationTokenSource; completion: Promise<void>; conversation: number; activity: string[] } | undefined;
 	private agentConversation = 0;
@@ -102,8 +104,12 @@ export class CloudCodeChatController extends Disposable {
 			this.saveScheduler.schedule();
 		}));
 		this._register(view.onDidReviewEdit(event => void this.reviewEdit(event.id, event.action)));
+		if (view.onDidReviewEditingSession) {
+			this._register(view.onDidReviewEditingSession(event => void this.reviewEditingSession(event.id, event.action)));
+		}
 		this.view.setEditMode(this.mode);
 		this.view.setEditProposals([], false);
+		this.renderEditingSessions();
 		this._register(view.onDidSubmit(prompt => void this.submit(prompt)));
 		this._register(view.onDidStop(() => this.stop()));
 		this._register(view.onDidSignIn(() => void this.signIn()));
@@ -432,13 +438,22 @@ export class CloudCodeChatController extends Disposable {
 					this.view.setMessages(this.messages);
 				}, history);
 				if (!isCurrent()) {
+					result.editingSession?.dispose();
 					return;
 				}
 				if (request.source.token.isCancellationRequested) {
+					result.editingSession?.dispose();
 					throw new CancellationError();
 				}
+				if (result.editingSession) {
+					if (result.editingSession.changes.length) {
+						this.retainEditingSession(result.editingSession, prompt);
+					} else {
+						result.editingSession.dispose();
+					}
+				}
 				this.editProposals = result.edits.map(edit => ({ ...edit, id: generateUuid(), status: 'pending', reviewed: false }));
-				this.messages[responseIndex] = { role: 'assistant', text: result.text, attachments: result.attachments, activity: [...request.activity], ...(result.edits.length ? { proposedEdits: true } : {}) };
+				this.messages[responseIndex] = { role: 'assistant', text: result.text, attachments: result.attachments, activity: [...request.activity], ...(result.edits.length || result.editingSession?.changes.length ? { proposedEdits: true } : {}) };
 				this.history = this.agentHistory();
 				this.historyHasAttachments = false;
 				this.view.setEditProposals(this.editProposals, false);
@@ -540,7 +555,102 @@ export class CloudCodeChatController extends Disposable {
 	}
 
 	private hasPendingEdits(): boolean {
-		return this.editProposals.some(proposal => proposal.status === 'pending');
+		return this.editProposals.some(proposal => proposal.status === 'pending') || [...this.editingSessions.values()].some(({ session }) => session.status === 'pending');
+	}
+
+	private retainEditingSession(session: ICloudCodeEditingSession, prompt: string): void {
+		this.editingSessions.set(session.id, { session, title: prompt.replace(/\s+/g, ' ').trim().slice(0, 80) });
+		while (this.editingSessions.size > 5) {
+			const oldest = [...this.editingSessions.values()].find(entry => entry.session.status === 'rejected' || entry.session.status === 'undone') ?? this.editingSessions.values().next().value!;
+			this.editingSessions.delete(oldest.session.id);
+			oldest.session.dispose();
+			if (oldest.session.status === 'applied' || oldest.session.status === 'partial') {
+				this.messages.push({ role: 'assistant', text: localize('cloudcode.olderTaskReviewClosed', "The oldest task review was closed. Its applied changes remain in your files.") });
+			}
+		}
+		this.renderEditingSessions();
+	}
+
+	private renderEditingSessions(): void {
+		this.view.setEditingSessions?.([...this.editingSessions.values()].map(({ session, title, error }) => ({
+			id: session.id,
+			title,
+			status: session.status,
+			reviewed: session.reviewed,
+			changes: session.changes.map(change => ({ kind: change.kind, path: change.kind === 'create' ? change.after.path : change.before.path, ...(change.kind === 'rename' ? { newPath: change.after.path } : {}) })),
+			error
+		})), this.editBusy);
+	}
+
+	private clearEditingSessions(): void {
+		for (const { session } of this.editingSessions.values()) {
+			session.dispose();
+		}
+		this.editingSessions.clear();
+		if (!this.disposed) {
+			this.renderEditingSessions();
+		}
+	}
+
+	private async reviewEditingSession(id: string, action: CloudCodeEditingSessionAction): Promise<void> {
+		if (this.disposed || this.editBusy || this.running || this.state.status !== 'signedIn') {
+			return;
+		}
+		const entry = this.editingSessions.get(id);
+		if (!entry) {
+			return;
+		}
+		const { session } = entry;
+		if (action === 'undo' ? session.status !== 'applied' && session.status !== 'partial' : session.status !== 'pending' || action === 'accept' && !session.reviewed) {
+			return;
+		}
+		const revision = this.editRevision;
+		const before = session.status;
+		this.editBusy = true;
+		entry.error = undefined;
+		this.view.setError(undefined);
+		this.renderEditingSessions();
+		this.view.setEditProposals(this.editProposals, true);
+		this.updateStatus();
+		try {
+			switch (action) {
+				case 'preview': await session.preview(); break;
+				case 'accept': await session.apply(); break;
+				case 'reject': session.reject(); break;
+				case 'undo': await session.undo(); break;
+			}
+		} catch (error) {
+			if (!this.disposed && revision === this.editRevision) {
+				entry.error = error instanceof Error ? error.message : localize('cloudcode.taskReviewFailed', "The task changes could not be reviewed or updated.");
+				this.showError(error);
+			}
+		} finally {
+			if (!this.disposed && revision === this.editRevision) {
+				if (session.status !== before) {
+					this.recordEditingSessionOutcome(session);
+				}
+				this.editBusy = false;
+				this.renderEditingSessions();
+				this.view.setEditProposals(this.editProposals, false);
+				this.updateStatus();
+			}
+		}
+	}
+
+	private recordEditingSessionOutcome(session: ICloudCodeEditingSession): void {
+		const paths = session.changes.map(change => change.kind === 'rename' ? `${change.before.path} → ${change.after.path}` : change.kind === 'create' ? change.after.path : change.before.path).join(', ');
+		let text: string;
+		switch (session.status) {
+			case 'applied': text = localize('cloudcode.taskApplied', "Applied the task changes: {0}. Read these files again before making further changes.", paths); break;
+			case 'partial': text = localize('cloudcode.taskPartiallyApplied', "The task changes were only partly applied: {0}. Read the current files again before making further changes.", paths); break;
+			case 'rejected': text = localize('cloudcode.taskRejected', "Rejected the task changes: {0}. These changes were not applied.", paths); break;
+			case 'undone': text = localize('cloudcode.taskUndone', "Undid the task changes: {0}. Read these files again before making further changes.", paths); break;
+			default: return;
+		}
+		this.messages.push({ role: 'assistant', text });
+		this.history = this.agentHistory();
+		this.historyHasAttachments = false;
+		this.view.setMessages(this.messages);
 	}
 
 	private clearEditProposals(): void {
@@ -636,6 +746,7 @@ export class CloudCodeChatController extends Disposable {
 			this.messages.push({ role: 'assistant', text: localize('cloudcode.archivedEdits', "The unreviewed changes were discarded. Ask again to prepare a fresh diff.") });
 		}
 		this.clearEditProposals();
+		this.clearEditingSessions();
 		this.attachmentRevision++;
 		this.loadingAttachments = false;
 	}
@@ -762,6 +873,7 @@ export class CloudCodeChatController extends Disposable {
 		this.cancellationOnDispose = this.activeAgent?.completion ?? Promise.resolve();
 		this.editRevision++;
 		this.editProvider?.clear();
+		this.clearEditingSessions();
 		this.modelRequest++;
 		this.attachmentRevision++;
 		const request = this.activeRequest;

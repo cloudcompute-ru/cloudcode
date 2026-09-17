@@ -5,9 +5,10 @@
 
 import { CloudCodeChatWidget } from '../../../contrib/cloudCode/browser/cloudCodeChatWidget.js';
 import { CloudCodeChatStatus } from '../../../contrib/cloudCode/common/cloudCodeChat.js';
+import { CloudCodeEditingSessionStatus } from '../../../contrib/cloudCode/common/cloudCodeEditingSession.js';
 import { ComponentFixtureContext, defineComponentFixture, defineThemedFixtureGroup } from './fixtureUtils.js';
 
-function renderChat({ container, disposableStore }: ComponentFixtureContext, status: CloudCodeChatStatus, variant?: 'signingIn' | 'error' | 'incomplete'): void {
+function renderChat({ container, disposableStore }: ComponentFixtureContext, status: CloudCodeChatStatus, variant?: 'signingIn' | 'error' | 'incomplete'): CloudCodeChatWidget {
 	container.style.width = '360px';
 	container.style.height = '600px';
 	container.style.backgroundColor = 'var(--vscode-sideBar-background)';
@@ -32,14 +33,32 @@ function renderChat({ container, disposableStore }: ComponentFixtureContext, sta
 		widget.setError('Your CloudCompute balance is insufficient. Add funds to continue chatting.');
 	}
 	widget.setStatus(status);
+	return widget;
+}
+
+function renderTask(context: ComponentFixtureContext, status: CloudCodeEditingSessionStatus, reviewed = false): void {
+	const widget = renderChat(context, 'ready');
+	widget.setMessages([
+		{ role: 'user', text: 'Add debounced search and update the tests.' },
+		{ role: 'assistant', text: 'Prepared the search helper and tests. Review the combined changes below.', proposedEdits: true }
+	]);
+	widget.setEditingSessions([{
+		id: 'example-task', title: 'Add debounced search and update the tests', status, reviewed,
+		changes: [{ kind: 'edit', path: 'src/search.ts' }, { kind: 'create', path: 'src/utils/debounce.ts' }, { kind: 'rename', path: 'test/search.test.ts', newPath: 'test/search/debouncedSearch.test.ts' }, { kind: 'delete', path: 'src/legacySearch.ts' }],
+		...(status === 'partial' ? { error: 'Some changes could not be applied because a file changed during the review.' } : {})
+	}], false);
 }
 
 export default defineThemedFixtureGroup({ path: 'cloudCode/' }, {
-	Disconnected: defineComponentFixture({ render: context => renderChat(context, 'disconnected') }),
-	SigningIn: defineComponentFixture({ render: context => renderChat(context, 'disconnected', 'signingIn') }),
-	LoadingModels: defineComponentFixture({ render: context => renderChat(context, 'loading') }),
-	Conversation: defineComponentFixture({ render: context => renderChat(context, 'ready') }),
-	Running: defineComponentFixture({ render: context => renderChat(context, 'running') }),
-	Error: defineComponentFixture({ render: context => renderChat(context, 'ready', 'error') }),
-	Stopped: defineComponentFixture({ render: context => renderChat(context, 'ready', 'incomplete') }),
+	Disconnected: defineComponentFixture({ render: context => { renderChat(context, 'disconnected'); } }),
+	SigningIn: defineComponentFixture({ render: context => { renderChat(context, 'disconnected', 'signingIn'); } }),
+	LoadingModels: defineComponentFixture({ render: context => { renderChat(context, 'loading'); } }),
+	Conversation: defineComponentFixture({ render: context => { renderChat(context, 'ready'); } }),
+	Running: defineComponentFixture({ render: context => { renderChat(context, 'running'); } }),
+	Error: defineComponentFixture({ render: context => { renderChat(context, 'ready', 'error'); } }),
+	Stopped: defineComponentFixture({ render: context => { renderChat(context, 'ready', 'incomplete'); } }),
+	TaskReview: defineComponentFixture({ render: context => renderTask(context, 'pending') }),
+	TaskReviewed: defineComponentFixture({ render: context => renderTask(context, 'pending', true) }),
+	TaskApplied: defineComponentFixture({ render: context => renderTask(context, 'applied', true) }),
+	TaskPartial: defineComponentFixture({ render: context => renderTask(context, 'partial', true) }),
 });

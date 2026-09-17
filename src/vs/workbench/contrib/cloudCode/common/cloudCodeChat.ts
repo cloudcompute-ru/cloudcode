@@ -6,6 +6,7 @@
 import { Event } from '../../../../base/common/event.js';
 import { ICloudCodeAttachment } from './cloudCodeChatContext.js';
 import { CloudCodeChatMode, ICloudCodeEditProposal } from './cloudCodeEdits.js';
+import { CloudCodeEditingSessionAction, ICloudCodeEditingSessionView } from './cloudCodeEditingSession.js';
 import { ICloudCodeModel, ICloudCodeState } from '../../../../platform/cloudCode/common/cloudCode.js';
 
 export interface ICloudCodeChatMessage {
@@ -39,6 +40,7 @@ export interface ICloudCodeChatView {
 	readonly onDidSubmit: Event<string>;
 	readonly onDidChangeMode: Event<CloudCodeChatMode>;
 	readonly onDidReviewEdit: Event<{ id: string; action: 'preview' | 'accept' | 'reject' }>;
+	readonly onDidReviewEditingSession?: Event<{ id: string; action: CloudCodeEditingSessionAction }>;
 	readonly onDidStop: Event<void>;
 	readonly onDidSignIn: Event<void>;
 	readonly onDidCancelSignIn: Event<void>;
@@ -49,6 +51,7 @@ export interface ICloudCodeChatView {
 	setAttachments(attachments: readonly ICloudCodeAttachment[], loading: boolean): void;
 	setEditMode(mode: CloudCodeChatMode): void;
 	setEditProposals(proposals: readonly ICloudCodeEditProposal[], busy: boolean): void;
+	setEditingSessions?(sessions: readonly ICloudCodeEditingSessionView[], busy: boolean): void;
 	setSession(state: ICloudCodeState): void;
 	setModels(models: readonly ICloudCodeModel[], selected: string | undefined, loading: boolean): void;
 	setMessages(messages: readonly ICloudCodeChatMessage[]): void;

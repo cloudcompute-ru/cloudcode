@@ -15,7 +15,7 @@ import { ITextModel } from '../../../../../editor/common/model.js';
 import { IModelService } from '../../../../../editor/common/services/model.js';
 import { createTextModel } from '../../../../../editor/test/common/testTextModel.js';
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
-import { IFileService, IFileStatWithPartialMetadata } from '../../../../../platform/files/common/files.js';
+import { FileOperationError, FileOperationResult, IFileService, IFileStatWithPartialMetadata } from '../../../../../platform/files/common/files.js';
 import { TestInstantiationService } from '../../../../../platform/instantiation/test/common/instantiationServiceMock.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { IUriIdentityService } from '../../../../../platform/uriIdentity/common/uriIdentity.js';
@@ -104,7 +104,7 @@ suite('CloudCodeAgentWorkspace', () => {
 				const value = files.get(key);
 				const isDirectory = folders.some(folder => folder.uri.toString() === key) || [...files.keys()].some(file => file.startsWith(key + '/'));
 				if (value === undefined && !isDirectory && !links.has(key)) {
-					throw new Error(`File missing on machine: ${key}`);
+					throw new FileOperationError(`File missing on machine: ${key}`, FileOperationResult.FILE_NOT_FOUND);
 				}
 				return upcastPartial<IFileStatWithPartialMetadata>({ isFile: value !== undefined, isDirectory, isSymbolicLink: links.has(key), size: new TextEncoder().encode(value).byteLength });
 			} }),
@@ -132,6 +132,57 @@ suite('CloudCodeAgentWorkspace', () => {
 	function read(path: string, startLine?: number, endLine?: number) {
 		return session.execute({ tool: 'read', root: '1', path, startLine, endLine }, CancellationToken.None);
 	}
+
+	test('authorizes existing edit targets only through native search exclusions', async () => {
+		const allowed = addFile('src/allowed.ts');
+		const ignoredFile = addFile('src/ignored.ts');
+		ignored.add(ignoredFile.toString());
+		addFile('hidden/excluded.ts');
+		assert.deepStrictEqual(await session.authorizeEditPath!('1', 'src/allowed.ts', CancellationToken.None), { resource: allowed.toString(), exists: true });
+		await assert.rejects(session.authorizeEditPath!('1', 'src/ignored.ts', CancellationToken.None), /excluded/);
+		await assert.rejects(session.authorizeEditPath!('1', 'hidden/excluded.ts', CancellationToken.None), /excluded/);
+		assert.strictEqual(reads.length, 0);
+	});
+
+	test('keeps captured post-apply paths safe when search eligibility changes', async () => {
+		const file = addFile('existing.ts');
+		await session.authorizeEditPath!('1', 'existing.ts', CancellationToken.None);
+		ignored.add(file.toString());
+		await assert.rejects(session.authorizeEditPath!('1', 'existing.ts', CancellationToken.None), /excluded/);
+		assert.deepStrictEqual(await session.authorizeEditPath!('1', 'existing.ts', CancellationToken.None, false), { resource: file.toString(), exists: true });
+		links.add(file.toString());
+		await assert.rejects(session.authorizeEditPath!('1', 'existing.ts', CancellationToken.None, false), /excluded/);
+		await assert.rejects(session.authorizeEditPath!('1', '.env', CancellationToken.None, false), /excluded/);
+	});
+
+	test('authorizes only an absent leaf in an existing safe parent', async () => {
+		addFile('src/existing.ts');
+		assert.deepStrictEqual(await session.authorizeEditPath!('1', 'src/new.ts', CancellationToken.None), { resource: URI.joinPath(root, 'src/new.ts').toString(), exists: false });
+		await assert.rejects(session.authorizeEditPath!('1', 'missing/new.ts', CancellationToken.None));
+		links.add(URI.joinPath(root, 'src').toString());
+		await assert.rejects(session.authorizeEditPath!('1', 'src/new.ts', CancellationToken.None), /Symbolic/);
+	});
+
+	test('rejects secret, generated, Windows alias, linked leaf and root edit targets', async () => {
+		for (const path of ['.env', 'node_modules/new.ts', 'node_modules./new.ts', 'NUL.ts', 'file.ts ', '../outside.ts']) {
+			await assert.rejects(session.authorizeEditPath!('1', path, CancellationToken.None));
+		}
+		const linked = addFile('linked.ts');
+		links.add(linked.toString());
+		await assert.rejects(session.authorizeEditPath!('1', 'linked.ts', CancellationToken.None), /excluded/);
+		links.add(root.toString());
+		await assert.rejects(session.authorizeEditPath!('1', 'new.ts', CancellationToken.None), /symbolic/);
+	});
+
+	test('rechecks trust after awaiting edit eligibility', async () => {
+		addFile('existing.ts');
+		pendingSearch = new DeferredPromise<ISearchComplete>();
+		const authorization = session.authorizeEditPath!('1', 'existing.ts', CancellationToken.None);
+		await Promise.resolve();
+		trusted = false;
+		pendingSearch.complete({ results: [], messages: [] });
+		await assert.rejects(authorization, /Trust this workspace/);
+	});
 
 	test('resolves references to current workspace paths without bypassing exclusions', () => {
 		const paths = ['file:///project/package-lock.json', 'file:///project/.env', 'file:///project/node_modules/a.json', 'file:///other/lock.json', 'file:///project/lock.json#fragment'];

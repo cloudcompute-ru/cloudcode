@@ -16,6 +16,7 @@ import { ICloudCodeAgentDiagnostic } from '../../../../../platform/cloudCode/com
 import { CloudCodeAgent, CloudCodeAgentToolCall, ICloudCodeAgentToolResult, ICloudCodeAgentWorkspaceSession } from '../../common/cloudCodeAgent.js';
 import { ICloudCodeAttachment } from '../../common/cloudCodeChatContext.js';
 import { ICloudCodeEditProvider, ICloudCodeEditTarget } from '../../common/cloudCodeEdits.js';
+import { CloudCodeEditingReadOnlyError, CloudCodeEditingSession, ICloudCodeEditingSessionFactory, ICloudCodeEditingWorkspace, ICloudCodeSessionFile } from '../../common/cloudCodeEditingSession.js';
 
 class TestService extends Disposable implements ICloudCodeService {
 	declare readonly _serviceBrand: undefined;
@@ -88,6 +89,25 @@ class TestEdits implements ICloudCodeEditProvider {
 	clear() { this.cleared++; }
 }
 
+class TestEditingWorkspace implements ICloudCodeEditingWorkspace {
+	readonly files = new Map<string, string>();
+	readonly reads: string[] = [];
+	disposed = false;
+	assertValid(): void { if (this.disposed) { throw new Error('Disposed workspace'); } }
+	key(root: string, path: string): string { return root + '/' + path; }
+	async read(root: string, path: string): Promise<ICloudCodeSessionFile> {
+		this.assertValid();
+		this.reads.push(path);
+		const content = this.files.get(path);
+		if (content && content.length > 1024 * 1024) { throw new CloudCodeEditingReadOnlyError(); }
+		return { root, path, resource: 'file:///private/project/' + path, content, languageId: 'typescript' };
+	}
+	async preview(): Promise<void> { throw new Error('Agent must not open a review without user action'); }
+	async apply(): Promise<boolean> { throw new Error('Agent must never write files'); }
+	async undo(): Promise<void> { throw new Error('Agent must never write files'); }
+	dispose(): void { this.disposed = true; }
+}
+
 suite('CloudCodeAgent', () => {
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
 
@@ -95,15 +115,22 @@ suite('CloudCodeAgent', () => {
 		return { id: 'private-id-' + name + (range?.startLineNumber ?? ''), resource: 'file:///private/project/' + name, label: name, content, languageId: 'typescript', range };
 	}
 
-	function setup(responses: readonly ICloudCodeAgentResponse[] = []) {
+	function setup(responses: readonly ICloudCodeAgentResponse[] = [], editingFactory?: ICloudCodeEditingSessionFactory) {
 		const service = disposables.add(new TestService());
 		service.responses = [...responses];
 		const session = new TestSession();
 		const edits = new TestEdits();
-		const agent = new CloudCodeAgent(service, { createSession: () => session }, edits);
+		const agent = new CloudCodeAgent(service, { createSession: () => session }, edits, editingFactory);
 		const progress: string[] = [];
 		const run = (attachments: readonly ICloudCodeAttachment[] = [], token = CancellationToken.None, prompt = 'Find and fix the bug', history: readonly ICloudCodeMessage[] = []) => agent.run(prompt, attachments, 'model-1', token, message => progress.push(message), history);
 		return { service, session, edits, agent, progress, run };
+	}
+
+	function setupEditing(responses: readonly ICloudCodeAgentResponse[] = [], files: Readonly<Record<string, string>> = {}) {
+		const workspace = new TestEditingWorkspace();
+		for (const [path, content] of Object.entries(files)) { workspace.files.set(path, content); }
+		const editingSession = disposables.add(new CloudCodeEditingSession(workspace));
+		return { ...setup(responses, { createSession: () => editingSession }), editingSession, editingWorkspace: workspace };
 	}
 
 	function requestData(service: TestService, index: number): { snapshots: { attachment: number; content: string; path: string }[]; referencedFiles: { root: string; path: string }[]; previousConversation: ICloudCodeMessage[]; remainingCalls: number } {
@@ -121,6 +148,168 @@ suite('CloudCodeAgent', () => {
 			calls: test.session.calls,
 			diagnostics: test.service.diagnostics
 		}, { text, roles: ['system', 'user'], tools: ['list', 'findFiles', 'search', 'read', 'propose'], calls: [], diagnostics: [] });
+	});
+
+	test('stages a complete multi-file task across repeated patches, rename, create and delete without disk writes', async () => {
+		const test = setupEditing([
+			tool('read', { root: 'root-1', path: 'main.ts' }),
+			tool('apply_patch', { root: 'root-1', path: 'main.ts', oldText: 'original', newText: 'first edit' }),
+			tool('rename_file', { root: 'root-1', path: 'main.ts', newPath: 'renamed.ts' }),
+			tool('read', { root: 'root-1', path: 'renamed.ts' }),
+			tool('apply_patch', { root: 'root-1', path: 'renamed.ts', oldText: 'first edit', newText: 'final edit' }),
+			tool('create_file', { root: 'root-1', path: 'temporary.ts', content: 'temporary' }),
+			tool('delete_file', { root: 'root-1', path: 'temporary.ts' }),
+			tool('create_file', { root: 'root-1', path: 'new.ts', content: 'new file' }),
+			tool('read', { root: 'root-1', path: 'remove.ts' }),
+			tool('delete_file', { root: 'root-1', path: 'remove.ts' }),
+			tool('list', { root: 'root-1', path: '' }),
+			tool('read', { root: 'root-1', path: 'renamed.ts' }),
+			answer('The three-file change is ready for review.')
+		], { 'main.ts': 'original', 'remove.ts': 'remove me' });
+		const result = await test.run();
+		assert.deepStrictEqual({
+			sessionTransferred: result.editingSession === test.editingSession,
+			sessionDisposed: test.editingWorkspace.disposed,
+			legacyEdits: result.edits,
+			legacyPrepared: test.edits.prepared,
+			diskCalls: test.session.calls.map(call => call.tool),
+			diskFiles: [...test.editingWorkspace.files],
+			changes: result.editingSession?.changes.map(change => ({ kind: change.kind, before: change.before.path, after: change.after.path, content: change.after.content })),
+			lastRead: requestData(test.service, 12).snapshots.map(snapshot => snapshot.content),
+			remaining: requestData(test.service, 0).remainingCalls,
+			tools: test.service.requests[0].tools.map(definition => definition.name)
+		}, {
+			sessionTransferred: true, sessionDisposed: false, legacyEdits: [], legacyPrepared: [], diskCalls: ['list'],
+			diskFiles: [['main.ts', 'original'], ['remove.ts', 'remove me']],
+			changes: [
+				{ kind: 'rename', before: 'main.ts', after: 'renamed.ts', content: 'final edit' },
+				{ kind: 'create', before: 'new.ts', after: 'new.ts', content: 'new file' },
+				{ kind: 'delete', before: 'remove.ts', after: 'remove.ts', content: undefined }
+			],
+			lastRead: ['final edit'], remaining: 24,
+			tools: ['list', 'findFiles', 'search', 'read', 'apply_patch', 'create_file', 'rename_file', 'delete_file']
+		});
+		const task = JSON.parse(test.service.requests[12].messages[1].content);
+		assert.deepStrictEqual(task.stagedChanges, test.editingSession.summary());
+		assert.ok(test.service.requests[12].messages[0].content.includes('describe disk files only'));
+	});
+
+	test('validates every staging argument before granting editing capabilities', async () => {
+		for (const response of [
+			tool('apply_patch', { root: 'root-1', path: 'main.ts', oldText: '', newText: 'replace' }),
+			tool('apply_patch', { root: 'root-1', path: 'main.ts', oldText: 'old', newText: 'new', command: 'shell' }),
+			tool('create_file', { root: 'root-1', path: 'new.ts', content: 'é'.repeat(16385) }),
+			tool('create_file', { root: 'root-1', path: 'new.ts', content: '\0' }),
+			tool('create_file', { root: 'missing', path: 'new.ts', content: 'value' }),
+			tool('rename_file', { root: 'root-1', path: 'main.ts', newPath: '../outside.ts' }),
+			tool('rename_file', { root: 'root-1', path: 'main.ts', newPath: 'file:///outside.ts' }),
+			tool('delete_file', { root: 'root-1', path: 'main.ts', force: true }),
+			tool('propose', { edits: [] })
+		]) {
+			const test = setupEditing(repeated(response), { 'main.ts': 'original' });
+			await assert.rejects(test.run(), /unsupported Agent action/);
+			assert.deepStrictEqual({ reads: test.editingWorkspace.reads, prepared: test.edits.prepared, disposed: test.editingWorkspace.disposed }, { reads: [], prepared: [], disposed: true });
+		}
+	});
+
+	test('keeps a rolling source cache and preserves observations after eviction', async () => {
+		const files = Object.fromEntries(Array.from({ length: 7 }, (_, index) => [index + '.ts', `${index}:` + 'x'.repeat(5 * 1024)]));
+		const test = setupEditing([
+			...Object.keys(files).map(path => tool('read', { root: 'root-1', path })),
+			tool('apply_patch', { root: 'root-1', path: '0.ts', oldText: '0:', newText: 'changed:' }),
+			answer('Done')
+		], files);
+		const result = await test.run();
+		assert.deepStrictEqual({
+			paths: result.attachments.map(attachment => attachment.label),
+			change: result.editingSession?.changes[0].after.content,
+			failures: test.service.requests.at(-1)!.messages.filter(message => message.role === 'tool' && JSON.parse(message.content).ok === false)
+		}, { paths: ['3.ts', '4.ts', '5.ts', '6.ts'], change: 'changed:' + 'x'.repeat(5 * 1024), failures: [] });
+	});
+
+	test('an overlay read that cannot fit in the model context terminates before its observations can authorize changes', async () => {
+		const original = '\t'.repeat(16 * 1024);
+		const test = setupEditing([
+			tool('read', { root: 'root-1', path: 'escaped.ts' }),
+			tool('delete_file', { root: 'root-1', path: 'escaped.ts' }),
+			answer('Deleted')
+		], { 'escaped.ts': original });
+		await assert.rejects(test.run(), /context limit/);
+		assert.deepStrictEqual({ requests: test.service.requests.length, disposed: test.editingWorkspace.disposed, disk: [...test.editingWorkspace.files] }, { requests: 1, disposed: true, disk: [['escaped.ts', original]] });
+	});
+
+	test('recovers a staging conflict with fixed feedback and a fresh read', async () => {
+		const test = setupEditing([
+			tool('apply_patch', { root: 'root-1', path: 'main.ts', oldText: 'original', newText: 'new' }),
+			tool('read', { root: 'root-1', path: 'main.ts' }),
+			tool('apply_patch', { root: 'root-1', path: 'main.ts', oldText: 'original', newText: 'new' }),
+			answer('Ready')
+		], { 'main.ts': 'original' });
+		const result = await test.run();
+		assert.deepStrictEqual({
+			code: JSON.parse(test.service.requests[1].messages.at(-1)!.content).code,
+			change: result.editingSession?.changes[0].after.content,
+			leaksPaths: test.service.requests.some(request => JSON.stringify(request.messages).includes('file:///private')),
+			diagnostics: test.service.diagnostics
+		}, { code: 'edit_conflict', change: 'new', leaksPaths: false, diagnostics: [] });
+	});
+
+	test('exhausted staging recovery disposes all pending changes', async () => {
+		const test = setupEditing([
+			tool('create_file', { root: 'root-1', path: 'new.ts', content: 'pending' }),
+			...repeated(tool('apply_patch', { root: 'root-1', path: 'missing.ts', oldText: 'old', newText: 'new' }))
+		]);
+		await assert.rejects(test.run(), /consistent set of changes/);
+		assert.deepStrictEqual({ disposed: test.editingWorkspace.disposed, disk: [...test.editingWorkspace.files], calls: test.service.requests.length, diagnostics: test.service.diagnostics.map(diagnostic => diagnostic.code) }, { disposed: true, disk: [], calls: 4, diagnostics: ['invalid_result'] });
+	});
+
+	test('deleted overlay files never fall back to a stale disk read', async () => {
+		const test = setupEditing([
+			tool('read', { root: 'root-1', path: 'main.ts' }),
+			tool('delete_file', { root: 'root-1', path: 'main.ts' }),
+			tool('read', { root: 'root-1', path: 'main.ts' }),
+			answer('Ready')
+		], { 'main.ts': 'original' });
+		const result = await test.run();
+		assert.deepStrictEqual({ diskReads: test.session.calls, snapshots: result.attachments, code: JSON.parse(test.service.requests[3].messages.at(-1)!.content).code, change: result.editingSession?.changes[0].kind }, { diskReads: [], snapshots: [], code: 'context_unavailable', change: 'delete' });
+	});
+
+	test('preserves bounded read-only access to files above the editing size limit', async () => {
+		const test = setupEditing([
+			tool('read', { root: 'root-1', path: 'large.ts', startLine: 1, endLine: 5 }), answer('Read only')
+		], { 'large.ts': 'x'.repeat(1024 * 1024 + 1) });
+		test.session.onExecute = async () => ({ text: '', attachment: attachment('large.ts', 'excerpt') });
+		const result = await test.run();
+		assert.deepStrictEqual({ diskCalls: test.session.calls.length, content: result.attachments[0].content, editingSession: result.editingSession, disposed: test.editingWorkspace.disposed }, { diskCalls: 1, content: 'excerpt', editingSession: undefined, disposed: true });
+		assert.ok(test.service.requests[1].messages.at(-1)!.content.includes('Read-only'));
+	});
+
+	test('cancellation after staging disposes the overlay without touching files', async () => {
+		const test = setupEditing([tool('create_file', { root: 'root-1', path: 'new.ts', content: 'pending' })]);
+		const cancellation = disposables.add(new CancellationTokenSource());
+		const waiting = new DeferredPromise<void>();
+		test.service.onRequest = async () => {
+			if (test.service.requests.length === 1) { return test.service.responses.shift()!; }
+			await waiting.complete();
+			return new Promise(() => { });
+		};
+		const running = test.run([], cancellation.token);
+		await waiting.p;
+		cancellation.cancel();
+		await assert.rejects(running, isCancellationError);
+		assert.deepStrictEqual({ disposed: test.editingWorkspace.disposed, disk: [...test.editingWorkspace.files], diagnostics: test.service.diagnostics }, { disposed: true, disk: [], diagnostics: [] });
+	});
+
+	test('editing tasks have a five-minute deadline and dispose a timed-out overlay', async () => {
+		const clock = sinon.useFakeTimers();
+		try {
+			const test = setupEditing();
+			test.service.onRequest = async () => new Promise(() => { });
+			const running = assert.rejects(test.run(), /five-minute limit/);
+			await clock.tickAsync(5 * 60 * 1000);
+			await running;
+			assert.deepStrictEqual({ disposed: test.editingWorkspace.disposed, timers: clock.countTimers(), code: test.service.diagnostics[0]?.code }, { disposed: true, timers: 0, code: 'timeout' });
+		} finally { clock.restore(); }
 	});
 
 	test('recovers malformed arguments with paired fixed feedback and reports no terminal failure', async () => {

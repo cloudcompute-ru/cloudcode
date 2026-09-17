@@ -22,6 +22,7 @@ import { defaultButtonStyles, defaultProgressBarStyles } from '../../../../platf
 import { ICloudCodeAttachment } from '../common/cloudCodeChatContext.js';
 import { CloudCodeChatStatus, ICloudCodeChatMessage, ICloudCodeChatView, ICloudCodeDraftReference } from '../common/cloudCodeChat.js';
 import { CloudCodeChatMode, ICloudCodeEditProposal } from '../common/cloudCodeEdits.js';
+import { CloudCodeEditingSessionAction, ICloudCodeEditingSessionView } from '../common/cloudCodeEditingSession.js';
 
 /** Presentation only; browser sign-in and inference run through the controller. */
 export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatView {
@@ -65,7 +66,13 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 	private readonly proposalDisposables = this._register(new DisposableStore());
 	private proposals: readonly ICloudCodeEditProposal[] = [];
 	private proposalButtons: { proposal: ICloudCodeEditProposal; preview: Button; accept: Button; reject: Button }[] = [];
-	private editingBusy = false;
+	private proposalBusy = false;
+	private readonly editingSessionsNode: HTMLElement;
+	private readonly editingSessionDisposables = this._register(new DisposableStore());
+	private editingSessions: readonly ICloudCodeEditingSessionView[] = [];
+	private editingSessionButtons: { session: ICloudCodeEditingSessionView; action: CloudCodeEditingSessionAction; button: Button }[] = [];
+	private editingSessionBusy = false;
+	private editingSessionFocus: { id: string | null; action: string | null } | undefined;
 	private models: readonly ICloudCodeModel[] = [];
 	private selectedModel: string | undefined;
 	private readonly retryModelsButton: Button;
@@ -81,6 +88,8 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 	readonly onDidChangeMode = this.changeModeEmitter.event;
 	private readonly reviewEditEmitter = this._register(new Emitter<{ id: string; action: 'preview' | 'accept' | 'reject' }>());
 	readonly onDidReviewEdit = this.reviewEditEmitter.event;
+	private readonly reviewEditingSessionEmitter = this._register(new Emitter<{ id: string; action: CloudCodeEditingSessionAction }>());
+	readonly onDidReviewEditingSession = this.reviewEditingSessionEmitter.event;
 	private readonly requestAttachmentsEmitter = this._register(new Emitter<void | (() => Promise<readonly ICloudCodeAttachment[]>)>());
 	readonly onDidRequestAttachments = this.requestAttachmentsEmitter.event;
 	private readonly removeAttachmentEmitter = this._register(new Emitter<string>());
@@ -147,6 +156,10 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 		dom.append(this.proposalsNode, dom.$('h3')).textContent = localize('cloudcode.proposedChanges', "Proposed Changes");
 		this.proposalHint = dom.append(this.proposalsNode, dom.$('p.cloudcode-chat-hint', { role: 'status', 'aria-live': 'polite' }));
 		this.proposalList = dom.append(this.proposalsNode, dom.$('.cloudcode-chat-proposal-list', { role: 'list' }));
+		this.editingSessionsNode = dom.append(this.conversation, dom.$('.cloudcode-chat-editing-sessions', {
+			role: 'region', 'aria-label': localize('cloudcode.taskChanges', "Task Changes")
+		}));
+		this.editingSessionsNode.hidden = true;
 
 		const composer = dom.append(this.domNode, dom.$('.cloudcode-chat-composer'));
 		this.errorLabel = dom.append(composer, dom.$('p.cloudcode-chat-error', { role: 'alert' }));
@@ -317,7 +330,7 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 	/** Keeps source in the native diff editor; this list shows review actions and outcomes. */
 	setEditProposals(proposals: readonly ICloudCodeEditProposal[], busy: boolean): void {
 		const wasAtBottom = this.conversation.scrollHeight - this.conversation.scrollTop - this.conversation.clientHeight < 20;
-		this.editingBusy = busy;
+		this.proposalBusy = busy;
 		this.proposalsNode.hidden = proposals.length === 0;
 		this.proposalsNode.setAttribute('aria-busy', String(busy));
 		const changed = proposals !== this.proposals;
@@ -384,7 +397,87 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 	}
 
 	private get hasPendingProposals(): boolean {
-		return this.proposals.some(proposal => proposal.status === 'pending');
+		return this.proposals.some(proposal => proposal.status === 'pending') || this.editingSessions.some(session => session.status === 'pending');
+	}
+
+	private get editingBusy(): boolean {
+		return this.proposalBusy || this.editingSessionBusy;
+	}
+
+	/** One file list and one review decision for each complete Agent task. */
+	setEditingSessions(sessions: readonly ICloudCodeEditingSessionView[], busy: boolean): void {
+		const wasAtBottom = this.conversation.scrollHeight - this.conversation.scrollTop - this.conversation.clientHeight < 20;
+		const active = this.editingSessionsNode.ownerDocument.activeElement;
+		const hadFocus = !!active && this.editingSessionsNode.contains(active);
+		if (hadFocus) {
+			this.editingSessionFocus = { id: active.getAttribute('data-session-id'), action: active.getAttribute('data-session-action') };
+		}
+		this.editingSessions = sessions;
+		this.editingSessionBusy = busy;
+		this.editingSessionsNode.hidden = sessions.length === 0;
+		this.editingSessionsNode.setAttribute('aria-busy', String(busy));
+		this.editingSessionDisposables.clear();
+		this.editingSessionButtons = [];
+		dom.clearNode(this.editingSessionsNode);
+		for (const session of sessions) {
+			const row = dom.append(this.editingSessionsNode, dom.$('section.cloudcode-chat-editing-session'));
+			dom.append(row, dom.$('h3')).textContent = session.title
+				? localize('cloudcode.namedTaskChangeCount', "{0} ({1})", session.title, session.changes.length)
+				: localize('cloudcode.taskChangeCount', "Task Changes ({0})", session.changes.length);
+			const files = dom.append(row, dom.$('ul.cloudcode-chat-task-files'));
+			for (const change of session.changes) {
+				const file = dom.append(files, dom.$('li'));
+				const kind = change.kind === 'create' ? localize('cloudcode.taskCreate', "Create")
+					: change.kind === 'delete' ? localize('cloudcode.taskDelete', "Delete")
+						: change.kind === 'rename' ? localize('cloudcode.taskRename', "Rename") : localize('cloudcode.taskEdit', "Edit");
+				dom.append(file, dom.$('span.cloudcode-chat-task-kind')).textContent = kind;
+				dom.append(file, dom.$('span.cloudcode-chat-task-path')).textContent = change.newPath ? `${change.path} → ${change.newPath}` : change.path;
+			}
+			const hint = dom.append(row, dom.$('p.cloudcode-chat-hint', { role: 'status' }));
+			hint.textContent = session.status === 'pending'
+				? localize('cloudcode.taskReviewHint', "Preview the combined diff, then accept or reject all changes before continuing.")
+				: session.status === 'partial' ? localize('cloudcode.taskPartialHint', "Some changes were applied. You can undo this task or continue from the current files.")
+					: session.status === 'applied' ? localize('cloudcode.taskAppliedHint', "Applied. Undo Task restores this task while preserving your later edits when possible.")
+						: session.status === 'undone' ? localize('cloudcode.taskUndoneHint', "Task changes undone.") : localize('cloudcode.taskRejectedHint', "Task changes rejected.");
+			if (session.error) {
+				dom.append(row, dom.$('p.cloudcode-chat-error', { role: 'alert' })).textContent = session.error;
+			}
+			const actions = dom.append(row, dom.$('.cloudcode-chat-proposal-actions'));
+			if (session.status === 'pending') {
+				this.createEditingSessionButton(actions, session, 'preview', localize('cloudcode.previewTask', "Preview Changes"), session.reviewed);
+				this.createEditingSessionButton(actions, session, 'accept', localize('cloudcode.acceptTask', "Accept All"), !session.reviewed);
+				this.createEditingSessionButton(actions, session, 'reject', localize('cloudcode.rejectTask', "Reject All"), true);
+			} else if (session.status === 'applied' || session.status === 'partial') {
+				this.createEditingSessionButton(actions, session, 'undo', localize('cloudcode.undoTask', "Undo Task"), true);
+			}
+		}
+		this.updateControls();
+		if (this.editingSessionFocus && !busy) {
+			const { id, action } = this.editingSessionFocus;
+			this.editingSessionFocus = undefined;
+			// Do not take focus back from the diff editor opened by Preview Changes.
+			if (this.editingSessionsNode.ownerDocument.activeElement === this.editingSessionsNode.ownerDocument.body) {
+				const next = this.editingSessionButtons.find(item => item.session.id === id && item.action === action && item.button.enabled)
+					?? this.editingSessionButtons.find(item => item.session.id === id && item.button.enabled);
+				if (next) { next.button.focus(); } else { this.conversation.focus(); }
+			}
+		}
+		if (wasAtBottom) {
+			this.conversation.scrollTop = this.conversation.scrollHeight;
+		}
+	}
+
+	private createEditingSessionButton(parent: HTMLElement, session: ICloudCodeEditingSessionView, action: CloudCodeEditingSessionAction, label: string, secondary: boolean): void {
+		const button = this.editingSessionDisposables.add(new Button(parent, { ...defaultButtonStyles, secondary }));
+		button.label = label;
+		button.element.setAttribute('data-session-id', session.id);
+		button.element.setAttribute('data-session-action', action);
+		this.editingSessionButtons.push({ session, action, button });
+		this.editingSessionDisposables.add(button.onDidClick(() => {
+			if (button.enabled) {
+				this.reviewEditingSessionEmitter.fire({ id: session.id, action });
+			}
+		}));
 	}
 
 	setAttachments(attachments: readonly ICloudCodeAttachment[], loading: boolean): void {
@@ -589,6 +682,9 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 			preview.enabled = canInteract;
 			accept.enabled = canInteract && proposal.reviewed;
 			reject.enabled = canInteract;
+		}
+		for (const { session, action, button } of this.editingSessionButtons) {
+			button.enabled = canInteract && (action !== 'accept' || session.reviewed);
 		}
 	}
 

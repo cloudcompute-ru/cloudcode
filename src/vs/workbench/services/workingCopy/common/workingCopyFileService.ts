@@ -21,6 +21,7 @@ import { SaveReason } from '../../../common/editor.js';
 import { IProgress, IProgressStep } from '../../../../platform/progress/common/progress.js';
 import { StoredFileWorkingCopySaveParticipant } from './storedFileWorkingCopySaveParticipant.js';
 import { IStoredFileWorkingCopy, IStoredFileWorkingCopyModel } from './storedFileWorkingCopy.js';
+import { localize } from '../../../../nls.js';
 
 export const IWorkingCopyFileService = createDecorator<IWorkingCopyFileService>('workingCopyFileService');
 
@@ -43,6 +44,9 @@ export interface IFileOperationUndoRedoInfo {
 	 * Id of the undo group that the file operation belongs to.
 	 */
 	undoRedoGroupId?: number;
+
+	/** Keep an explicitly reviewed operation isolated from additional participant edits. */
+	skipParticipants?: boolean;
 
 	/**
 	 * Flag indicates if the operation is an undo.
@@ -132,6 +136,8 @@ export interface IDeleteOperation {
 	resource: URI;
 	useTrash?: boolean;
 	recursive?: boolean;
+	/** Reject deletion rather than reverting unsaved changes, even if they arrive during participants. */
+	rejectIfDirty?: boolean;
 }
 
 export interface IMoveOperation {
@@ -464,17 +470,25 @@ export class WorkingCopyFileService extends Disposable implements IWorkingCopyFi
 		const event = { correlationId: this.correlationIds++, operation: FileOperation.DELETE, files };
 		await this._onWillRunWorkingCopyFileOperation.fireAsync(event, CancellationToken.None /* intentional: we currently only forward cancellation to participants */);
 
-		// check for any existing dirty working copies for the resource
-		// and do a soft revert before deleting to be able to close
-		// any opened editor with these working copies
-		for (const operation of operations) {
-			const dirtyWorkingCopies = this.getDirty(operation.resource);
-			await Promises.settled(dirtyWorkingCopies.map(dirtyWorkingCopy => dirtyWorkingCopy.revert({ soft: true })));
-		}
-
-		// now actually delete from disk
 		try {
+			// Check the whole guarded batch after asynchronous participants and events.
 			for (const operation of operations) {
+				this.assertDeleteNotDirty(operation);
+			}
+
+			// Guarded operations never revert working copies. Regular deletes retain
+			// their existing soft-revert behavior so opened editors can close.
+			for (const operation of operations) {
+				if (!operation.rejectIfDirty) {
+					const dirtyWorkingCopies = this.getDirty(operation.resource);
+					await Promises.settled(dirtyWorkingCopies.map(dirtyWorkingCopy => dirtyWorkingCopy.revert({ soft: true })));
+				}
+			}
+
+			// Recheck synchronously before each delete: a previous filesystem operation
+			// or an unguarded revert may have yielded while another file was edited.
+			for (const operation of operations) {
+				this.assertDeleteNotDirty(operation);
 				await this.fileService.del(operation.resource, { recursive: operation.recursive, useTrash: operation.useTrash });
 			}
 		} catch (error) {
@@ -487,6 +501,12 @@ export class WorkingCopyFileService extends Disposable implements IWorkingCopyFi
 
 		// after event
 		await this._onDidRunWorkingCopyFileOperation.fireAsync(event, CancellationToken.None /* intentional: we currently only forward cancellation to participants */);
+	}
+
+	private assertDeleteNotDirty(operation: IDeleteOperation): void {
+		if (operation.rejectIfDirty && this.getDirty(operation.resource).length > 0) {
+			throw new Error(localize('workingCopyFileService.dirtyDelete', "Cannot delete a file with unsaved changes."));
+		}
 	}
 
 	//#endregion
