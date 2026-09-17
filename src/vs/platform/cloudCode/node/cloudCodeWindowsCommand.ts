@@ -71,6 +71,8 @@ export function cloudCodeWindowsCommandArguments(): string[] {
 // https://learn.microsoft.com/windows/win32/api/jobapi2/nf-jobapi2-terminatejobobject
 const windowsCommandScript = String.raw`
 $ErrorActionPreference = 'Stop'
+# Module auto-loading otherwise writes CLIXML progress records into the command's stderr.
+$ProgressPreference = 'SilentlyContinue'
 $request = $null
 try {
  [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
