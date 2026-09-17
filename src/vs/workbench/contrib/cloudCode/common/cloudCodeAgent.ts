@@ -10,6 +10,7 @@ import { DisposableStore, IDisposable, toDisposable } from '../../../../base/com
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { localize } from '../../../../nls.js';
 import { CLOUDCODE_MAX_CONTEXT_BYTES, CLOUDCODE_MAX_MESSAGE_LENGTH, ICloudCodeMessage, ICloudCodeService } from '../../../../platform/cloudCode/common/cloudCode.js';
+import { CloudCodeAgentErrorCode, CloudCodeAgentStage } from '../../../../platform/cloudCode/common/cloudCodeDiagnostics.js';
 import { cloudCodeUserMessage, ICloudCodeAttachment, mergeCloudCodeAttachments } from './cloudCodeChatContext.js';
 import { ICloudCodeEditProvider, ICloudCodeProposedEdit, parseCloudCodeEdits } from './cloudCodeEdits.js';
 
@@ -66,8 +67,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function invalidAction(): Error {
-	return new Error(localize('cloudCode.agent.invalidAction', "The model returned an unsupported Agent action. Try again or choose another model."));
+class CloudCodeAgentError extends Error {
+	constructor(readonly code: CloudCodeAgentErrorCode, message: string) {
+		super(message);
+	}
+}
+
+function invalidAction(code: CloudCodeAgentErrorCode = 'invalid_result'): Error {
+	return new CloudCodeAgentError(code, localize('cloudCode.agent.invalidAction', "The model returned an unsupported Agent action. Try again or choose another model."));
 }
 
 /** Validate the whole control envelope before invoking any workspace or edit operation. */
@@ -76,10 +83,10 @@ function parseAction(response: string, roots: readonly { readonly id: string }[]
 	try {
 		parsed = JSON.parse(response);
 	} catch {
-		throw invalidAction();
+		throw invalidAction('invalid_json');
 	}
 	if (!isRecord(parsed)) {
-		throw invalidAction();
+		throw invalidAction('invalid_envelope');
 	}
 	const keys = Object.keys(parsed);
 	if (parsed.action === 'answer' && keys.length === 2 && typeof parsed.text === 'string' && parsed.text.trim()) {
@@ -88,31 +95,37 @@ function parseAction(response: string, roots: readonly { readonly id: string }[]
 	if (parsed.action === 'propose' && keys.length === 2 && Array.isArray(parsed.edits)) {
 		return { action: 'propose', response: JSON.stringify({ edits: parsed.edits }) };
 	}
-	if (parsed.action !== 'tool' || typeof parsed.root !== 'string' || !roots.some(root => root.id === parsed.root)) {
-		throw invalidAction();
+	if (parsed.action !== 'tool') {
+		throw invalidAction('invalid_envelope');
+	}
+	if (typeof parsed.root !== 'string' || !roots.some(root => root.id === parsed.root)) {
+		throw invalidAction('invalid_root');
 	}
 	if ((parsed.tool === 'findFiles' || parsed.tool === 'search') && keys.length === 4 && typeof parsed.query === 'string' && parsed.query.trim() && parsed.query.length <= 200 && !/[\x00-\x1f\x7f]/.test(parsed.query)) {
 		return { action: 'tool', call: { tool: parsed.tool, root: parsed.root, query: parsed.query } };
 	}
-	if ((parsed.tool !== 'list' && parsed.tool !== 'read') || typeof parsed.path !== 'string' || parsed.path.length > 1024 || /[\x00-\x1f\x7f\\:]/.test(parsed.path) || parsed.path.startsWith('/') || parsed.path.split('/').includes('..')) {
-		throw invalidAction();
+	if (parsed.tool !== 'list' && parsed.tool !== 'read') {
+		throw invalidAction('invalid_tool');
+	}
+	if (typeof parsed.path !== 'string' || parsed.path.length > 1024 || /[\x00-\x1f\x7f\\:]/.test(parsed.path) || parsed.path.startsWith('/') || parsed.path.split('/').includes('..')) {
+		throw invalidAction('invalid_path');
 	}
 	if (parsed.tool === 'list' && keys.length === 4) {
 		return { action: 'tool', call: { tool: 'list', root: parsed.root, path: parsed.path } };
 	}
 	if (parsed.tool !== 'read' || !parsed.path || keys.some(key => !['action', 'tool', 'root', 'path', 'startLine', 'endLine'].includes(key))) {
-		throw invalidAction();
+		throw invalidAction('invalid_tool');
 	}
 	if ((parsed.startLine === undefined) !== (parsed.endLine === undefined)) {
-		throw invalidAction();
+		throw invalidAction('invalid_range');
 	}
 	for (const line of [parsed.startLine, parsed.endLine]) {
 		if (line !== undefined && (typeof line !== 'number' || !Number.isSafeInteger(line) || line < 1)) {
-			throw invalidAction();
+			throw invalidAction('invalid_range');
 		}
 	}
 	if (typeof parsed.startLine === 'number' && typeof parsed.endLine === 'number' && parsed.endLine < parsed.startLine) {
-		throw invalidAction();
+		throw invalidAction('invalid_range');
 	}
 	return { action: 'tool', call: { tool: 'read', root: parsed.root, path: parsed.path, startLine: parsed.startLine as number | undefined, endLine: parsed.endLine as number | undefined } };
 }
@@ -214,6 +227,11 @@ export class CloudCodeAgent implements ICloudCodeAgent {
 		let timedOut = false;
 		let preparing = false;
 		let keepPreparedEdits = false;
+		let stage: CloudCodeAgentStage = 'workspace';
+		let turnNumber = 0;
+		let rootCount = 0;
+		let responseLength = 0;
+		let requestId: string | undefined;
 		const timer = setTimeout(() => {
 			timedOut = true;
 			cancellation.cancel();
@@ -221,6 +239,7 @@ export class CloudCodeAgent implements ICloudCodeAgent {
 		disposables.add(toDisposable(() => clearTimeout(timer)));
 		try {
 			const session = disposables.add(this.workspace.createSession());
+			rootCount = session.roots.length;
 			let snapshots = mergeSnapshots([], attachments);
 			const log: IToolLogEntry[] = [];
 			const assertValid = () => {
@@ -231,15 +250,23 @@ export class CloudCodeAgent implements ICloudCodeAgent {
 			};
 			for (let turn = 0; turn < maxModelCalls; turn++) {
 				assertValid();
+				turnNumber = turn + 1;
+				stage = 'context';
 				const messages = createMessages(prompt, session, snapshots, log, maxModelCalls - turn);
 				onProgress(localize('cloudCode.agent.thinking', "Thinking…"));
-				const response = await this.request(model, messages, cancellation.token);
+				stage = 'inference';
+				requestId = generateUuid();
+				responseLength = 0;
+				const response = await this.request(requestId, model, messages, cancellation.token);
+				responseLength = response.length;
 				assertValid();
+				stage = 'parse';
 				const action = parseAction(response, session.roots);
 				if (action.action === 'answer') {
 					return { text: action.text, attachments: snapshots, edits: [] };
 				}
 				if (action.action === 'propose') {
+					stage = 'edits';
 					// Validate all edits before resolving any local resource, then prepare only their targets.
 					const proposals = parseCloudCodeEdits(action.response, snapshots.filter(attachment => !attachment.image && !attachment.reference).map(attachment => ({ token: '', attachment })));
 					if (!proposals.length) {
@@ -256,6 +283,7 @@ export class CloudCodeAgent implements ICloudCodeAgent {
 					keepPreparedEdits = true;
 					return { text: localize('cloudCode.agent.editsReady', "Review each proposed diff, then accept or reject the change."), attachments: snapshots, edits };
 				}
+				stage = 'tool';
 				onProgress(describeTool(action.call));
 				try {
 					const result = await raceCancellationError(session.execute(action.call, cancellation.token), cancellation.token);
@@ -279,8 +307,16 @@ export class CloudCodeAgent implements ICloudCodeAgent {
 					onProgress(localize('cloudCode.agent.toolFailed', "The requested context was unavailable. Trying another approach…"));
 				}
 			}
-			throw new Error(localize('cloudCode.agent.callLimit', "Agent reached its 12-call limit. Try a smaller task or attach the relevant code."));
+			throw new CloudCodeAgentError('call_limit', localize('cloudCode.agent.callLimit', "Agent reached its 12-call limit. Try a smaller task or attach the relevant code."));
 		} catch (error) {
+			if (timedOut || (!token.isCancellationRequested && !isCancellationError(error))) {
+				try {
+					void this.service.reportAgentError({
+						code: timedOut ? 'timeout' : error instanceof CloudCodeAgentError ? error.code : 'operation_failed',
+						stage, model, turn: turnNumber, rootCount, responseLength, requestId
+					}).catch(() => { /* Reporting must not replace the original failure. */ });
+				} catch { /* Reporting may also fail synchronously during shutdown. */ }
+			}
 			if (timedOut) {
 				throw new Error(localize('cloudCode.agent.timedOut', "Agent reached its three-minute limit. Try a smaller task."));
 			}
@@ -295,11 +331,10 @@ export class CloudCodeAgent implements ICloudCodeAgent {
 	}
 
 	/** Buffer one control envelope; cancellation and overflow ignore all subsequent deltas. */
-	private async request(model: string, messages: readonly ICloudCodeMessage[], token: CancellationToken): Promise<string> {
+	private async request(requestId: string, model: string, messages: readonly ICloudCodeMessage[], token: CancellationToken): Promise<string> {
 		if (token.isCancellationRequested) {
 			throw new CancellationError();
 		}
-		const requestId = generateUuid();
 		const disposables = new DisposableStore();
 		let active = true;
 		let response = '';
@@ -318,7 +353,7 @@ export class CloudCodeAgent implements ICloudCodeAgent {
 				return;
 			}
 			if (response.length + delta.text.length > maxResponseBytes || new TextEncoder().encode(response + delta.text).byteLength > maxResponseBytes) {
-				overflowError = new Error(localize('cloudCode.agent.responseTooLarge', "The Agent response exceeded its size limit. Request a smaller change."));
+				overflowError = new CloudCodeAgentError('response_too_large', localize('cloudCode.agent.responseTooLarge', "The Agent response exceeded its size limit. Request a smaller change."));
 				cancel();
 				rejectOverflow(overflowError);
 				return;

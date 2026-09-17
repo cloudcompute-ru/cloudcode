@@ -18,6 +18,8 @@ import { IRequestService } from '../../../request/common/request.js';
 import { TestSecretStorageService } from '../../../secrets/test/common/testSecretStorageService.js';
 import { CLOUDCODE_SERVER_SETTING } from '../../common/cloudCode.js';
 import { CLOUDCODE_REDIRECT_URI } from '../../node/cloudCodeProtocol.js';
+import { NullLogService } from '../../../log/common/log.js';
+import { IProductService } from '../../../product/common/productService.js';
 import { CloudCodeService } from '../../node/cloudCodeService.js';
 
 suite('CloudCode service', () => {
@@ -53,7 +55,7 @@ suite('CloudCode service', () => {
 				return openExternal(url);
 			}
 		};
-		return { service: store.add(new CloudCodeService(configurationService, requestService, secrets, nativeHost)), secrets, requests };
+		return { service: store.add(new CloudCodeService(configurationService, requestService, secrets, nativeHost, { version: 'test' } as IProductService, new NullLogService())), secrets, requests };
 	}
 
 	async function savedSession(expired = false): Promise<TestSecretStorageService> {

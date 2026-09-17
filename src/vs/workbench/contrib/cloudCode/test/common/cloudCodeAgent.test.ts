@@ -12,6 +12,7 @@ import { Emitter, Event } from '../../../../../base/common/event.js';
 import { Disposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { CLOUDCODE_MAX_CONTEXT_BYTES, CLOUDCODE_MAX_MESSAGE_LENGTH, ICloudCodeChatDelta, ICloudCodeMessage, ICloudCodeService } from '../../../../../platform/cloudCode/common/cloudCode.js';
+import { ICloudCodeAgentDiagnostic } from '../../../../../platform/cloudCode/common/cloudCodeDiagnostics.js';
 import { CloudCodeAgent, CloudCodeAgentToolCall, ICloudCodeAgentToolResult, ICloudCodeAgentWorkspaceSession } from '../../common/cloudCodeAgent.js';
 import { ICloudCodeAttachment } from '../../common/cloudCodeChatContext.js';
 import { ICloudCodeEditProvider, ICloudCodeEditTarget } from '../../common/cloudCodeEdits.js';
@@ -24,6 +25,8 @@ class TestService extends Disposable implements ICloudCodeService {
 	readonly requests: { id: string; messages: readonly ICloudCodeMessage[] }[] = [];
 	readonly cancelled: string[] = [];
 	responses: string[] = [];
+	readonly diagnostics: ICloudCodeAgentDiagnostic[] = [];
+	async reportAgentError(diagnostic: ICloudCodeAgentDiagnostic): Promise<void> { this.diagnostics.push(diagnostic); }
 	onRequest: ((id: string) => Promise<{ cancelled: boolean }>) | undefined;
 	async getState() { return { status: 'signedIn' as const }; }
 	async signIn() { }
@@ -97,6 +100,43 @@ suite('CloudCodeAgent', () => {
 	function requestData(service: TestService, index: number): { snapshots: { attachment: number; content: string; path: string }[]; referencedFiles: { root: string; path: string }[]; toolResults: { result: string }[]; remainingCalls: number } {
 		return JSON.parse(service.requests[index].messages[0].content.split('\n').at(-1)!);
 	}
+
+	test('reports a handled model failure without sending prompt, source or response', async () => {
+		const test = setup();
+		test.service.responses = ['private model output'];
+		await assert.rejects(test.run([attachment('private.ts', 'private source')], CancellationToken.None, 'private prompt'), /unsupported Agent action/);
+		assert.deepStrictEqual(test.service.diagnostics, [{
+			code: 'invalid_json', stage: 'parse', model: 'model-1', turn: 1, rootCount: 1,
+			responseLength: 20, requestId: test.service.requests[0].id
+		}]);
+	});
+
+	test('distinguishes an unavailable root and unsupported tool', async () => {
+		for (const [response, code] of [
+			[{ action: 'tool', tool: 'read', root: 'missing', path: 'private.ts' }, 'invalid_root'],
+			[{ action: 'tool', tool: 'shell', root: 'root-1', path: '' }, 'invalid_tool']
+		] as const) {
+			const test = setup([response]);
+			await assert.rejects(test.run());
+			assert.strictEqual(test.service.diagnostics[0].code, code);
+		}
+	});
+
+	test('does not report a user cancellation or a successful answer', async () => {
+		const test = setup();
+		await test.run();
+		const source = disposables.add(new CancellationTokenSource());
+		source.cancel();
+		await assert.rejects(test.run([], source.token), isCancellationError);
+		assert.deepStrictEqual(test.service.diagnostics, []);
+	});
+
+	test('a reporting failure cannot replace the original error', async () => {
+		const test = setup();
+		test.service.responses = ['not JSON'];
+		test.service.reportAgentError = async () => { throw new Error('Reporter unavailable'); };
+		await assert.rejects(test.run(), /unsupported Agent action/);
+	});
 
 	test('resolves large file references and replaces them with bounded source after a read', async () => {
 		const reference: ICloudCodeAttachment = { ...attachment('package-lock.json', ''), reference: true };
@@ -328,7 +368,7 @@ suite('CloudCodeAgent', () => {
 		await assert.rejects(running, isCancellationError);
 		test.service.deltas.fire({ requestId: test.service.requests[0].id, text: '{"action":"tool","tool":"list","root":"root-1","path":""}' });
 		await response.complete({ cancelled: false });
-		assert.deepStrictEqual({ cancelled: test.service.cancelled.length, requests: test.service.requests.length, tools: test.session.calls.length, disposed: test.session.disposed }, { cancelled: 1, requests: 1, tools: 0, disposed: true });
+		assert.deepStrictEqual({ cancelled: test.service.cancelled.length, requests: test.service.requests.length, tools: test.session.calls.length, disposed: test.session.disposed, diagnostics: test.service.diagnostics }, { cancelled: 1, requests: 1, tools: 0, disposed: true, diagnostics: [] });
 	});
 
 	test('Stop interrupts a pending tool and prevents another model call after its late result', async () => {
@@ -406,7 +446,7 @@ suite('CloudCodeAgent', () => {
 			const running = assert.rejects(test.run(), /three-minute limit/);
 			await clock.tickAsync(3 * 60 * 1000);
 			await running;
-			assert.deepStrictEqual({ cancelled: test.service.cancelled.length, timers: clock.countTimers(), disposed: test.session.disposed }, { cancelled: 1, timers: 0, disposed: true });
+			assert.deepStrictEqual({ cancelled: test.service.cancelled.length, timers: clock.countTimers(), disposed: test.session.disposed, code: test.service.diagnostics[0]?.code }, { cancelled: 1, timers: 0, disposed: true, code: 'timeout' });
 		} finally {
 			clock.restore();
 		}

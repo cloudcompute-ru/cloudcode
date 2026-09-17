@@ -97,6 +97,8 @@ export interface IDictationRuntimeProductConfig {
 }
 
 export interface IProductConfiguration {
+	/** Public Sentry DSN for CloudCode desktop diagnostics; unset disables remote reporting. */
+	readonly cloudCodeSentryDsn?: string;
 
 	/** Disable the inherited Copilot experience in this distribution. */
 	readonly disableBuiltinCopilot?: boolean;

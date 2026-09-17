@@ -17,6 +17,10 @@ import { IConfigurationService } from '../../configuration/common/configuration.
 import { INativeHostService } from '../../native/common/native.js';
 import { IRequestService, NO_FETCH_TELEMETRY } from '../../request/common/request.js';
 import { ISecretStorageService } from '../../secrets/common/secrets.js';
+import { ILogService } from '../../log/common/log.js';
+import { IProductService } from '../../product/common/productService.js';
+import { ICloudCodeAgentDiagnostic } from '../common/cloudCodeDiagnostics.js';
+import { CloudCodeDiagnostics } from './cloudCodeDiagnostics.js';
 import { CLOUDCODE_DEFAULT_SERVER, CLOUDCODE_MAX_CONTEXT_BYTES, CLOUDCODE_MAX_MESSAGES, CLOUDCODE_MAX_MESSAGE_LENGTH, CLOUDCODE_SERVER_SETTING, ICloudCodeAccount, ICloudCodeChatDelta, ICloudCodeMessage, ICloudCodeModel, ICloudCodeService, ICloudCodeState } from '../common/cloudCode.js';
 import { CLOUDCODE_REDIRECT_URI, CloudCodeEventStream, CloudCodeLoopback, cloudCodeOrigin, createCloudCodeAuthorization, isRecord, parseCloudCodeAuthConfiguration } from './cloudCodeProtocol.js';
 
@@ -69,6 +73,7 @@ function parseAccount(value: unknown): ICloudCodeAccount {
 /** Shared-process transport: OAuth secrets and HTTP bodies never enter workbench storage. */
 export class CloudCodeService extends Disposable implements ICloudCodeService {
 	declare readonly _serviceBrand: undefined;
+	private readonly diagnostics: CloudCodeDiagnostics;
 
 	private readonly stateEmitter = this._register(new Emitter<ICloudCodeState>());
 	readonly onDidChangeState = this.stateEmitter.event;
@@ -94,8 +99,11 @@ export class CloudCodeService extends Disposable implements ICloudCodeService {
 		@IRequestService private readonly requestService: IRequestService,
 		@ISecretStorageService private readonly secretStorage: ISecretStorageService,
 		@INativeHostService private readonly nativeHostService: INativeHostService,
+		@IProductService productService: IProductService,
+		@ILogService logService: ILogService,
 	) {
 		super();
+		this.diagnostics = this._register(new CloudCodeDiagnostics(configurationService, productService, logService));
 		this._register(configurationService.onDidChangeConfiguration(event => {
 			if (event.affectsConfiguration(CLOUDCODE_SERVER_SETTING)) {
 				this.cancelOperations();
@@ -108,6 +116,10 @@ export class CloudCodeService extends Disposable implements ICloudCodeService {
 				this.publish();
 			}
 		}));
+	}
+
+	reportAgentError(diagnostic: ICloudCodeAgentDiagnostic): Promise<void> {
+		return this.diagnostics.report(diagnostic);
 	}
 
 	async getState(): Promise<ICloudCodeState> {

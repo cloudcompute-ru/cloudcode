@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { ICloudCodeImage } from './cloudCodeImages.js';
+import { ICloudCodeAgentDiagnostic } from './cloudCodeDiagnostics.js';
 import { localize } from '../../../nls.js';
 import { Event } from '../../../base/common/event.js';
 import { createDecorator } from '../../instantiation/common/instantiation.js';
@@ -57,6 +58,7 @@ export interface ICloudCodeService {
 	getModels(): Promise<readonly ICloudCodeModel[]>;
 	streamChat(requestId: string, model: string, messages: readonly ICloudCodeMessage[]): Promise<{ cancelled: boolean }>;
 	cancelChat(requestId: string): Promise<void>;
+	reportAgentError(diagnostic: ICloudCodeAgentDiagnostic): Promise<void>;
 }
 
 export function cloudCodeOrigin(value: string): string {
