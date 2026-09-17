@@ -61,6 +61,13 @@ suite('CloudCode command service', () => {
 		assert.deepStrictEqual(result, { exitCode: 0, stdout: 'finished', stderr: '', timedOut: false, cancelled: false, truncated: false });
 	});
 
+	test('preserves command stderr that resembles PowerShell progress serialization', async () => {
+		const service = store.add(new CloudCodeCommandService());
+		const stderr = '#< CLIXML\r\n<Objs Version="1.1.0.1"><S S="Error">command error</S></Objs>\nPreparing modules for first use.\n';
+		const result = await service.run(generateUuid(), command(`process.stderr.write(${JSON.stringify(stderr)});`), directory, 5000);
+		assert.deepStrictEqual(result, { exitCode: 0, stdout: '', stderr, timedOut: false, cancelled: false, truncated: false });
+	});
+
 	test('retains bounded UTF-8 head and tail across both output streams', async () => {
 		const service = store.add(new CloudCodeCommandService());
 		const result = await service.run(generateUuid(), command(`process.stdout.write('first:'+ '😀'.repeat(10000));process.stderr.write('字'.repeat(10000)+':last');`), directory, 5000);
@@ -195,8 +202,17 @@ suite('CloudCode command service', () => {
 	test('stops inherited pipes after the shell exits instead of hanging indefinitely', async function () {
 		this.timeout(15000);
 		const service = store.add(new CloudCodeCommandService());
-		const script = `require('child_process').spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'inherit'}).unref();`;
-		assert.strictEqual((await service.run(generateUuid(), command(script), directory, 10000)).failure, 'background_processes');
+		const marker = join(directory, 'inherited-pipes');
+		const childScript = `process.stdout.write('started');setTimeout(()=>require('fs').writeFileSync(${JSON.stringify(marker)},'orphan'),2000);setInterval(()=>{},1000);process.send('ready');`;
+		// Windows detachment avoids Node's own kill-on-exit job; the child still inherits the
+		// supervisor's job. POSIX children must remain in the command's process group.
+		const script = `const child=require('child_process').spawn(process.execPath,['-e',${JSON.stringify(childScript)}],{detached:${isWindows},stdio:['ignore','inherit','inherit','ipc']});child.once('message',()=>{child.disconnect();child.unref();});`;
+		const result = await service.run(generateUuid(), command(script), directory, 10000);
+		await timeout(2100);
+		await assert.rejects(readFile(marker), { code: 'ENOENT' });
+		assert.deepStrictEqual({ exitCode: result.exitCode, stdout: result.stdout, failure: result.failure, timedOut: result.timedOut, cancelled: result.cancelled }, {
+			exitCode: 0, stdout: 'started', failure: 'background_processes', timedOut: false, cancelled: false,
+		});
 	});
 
 	test('cleans up owned children even when they do not retain output pipes', async function () {
