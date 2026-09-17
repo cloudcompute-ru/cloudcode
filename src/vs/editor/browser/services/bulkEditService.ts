@@ -105,6 +105,8 @@ export interface IBulkEditOptions {
 	undoRedoGroupId?: number;
 	confirmBeforeUndo?: boolean;
 	respectAutoSaveConfig?: boolean;
+	/** Apply only the reviewed edits, without extension-generated file-operation edits. */
+	skipFileOperationParticipants?: boolean;
 	reason?: TextModelEditSource;
 }
 

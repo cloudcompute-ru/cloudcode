@@ -29,7 +29,7 @@ export function sanitizeCloudCodeAgentDiagnostic(value: unknown): ICloudCodeAgen
 	const input = value as Record<string, unknown>;
 	const code = cloudCodeAgentErrorCodes.find(code => code === input.code);
 	const stage = cloudCodeAgentStages.find(stage => stage === input.stage);
-	if (!code || !stage || typeof input.turn !== 'number' || !Number.isSafeInteger(input.turn) || input.turn < 0 || input.turn > 12
+	if (!code || !stage || typeof input.turn !== 'number' || !Number.isSafeInteger(input.turn) || input.turn < 0 || input.turn > 24
 		|| typeof input.rootCount !== 'number' || !Number.isSafeInteger(input.rootCount) || input.rootCount < 0 || input.rootCount > 10000
 		|| typeof input.responseLength !== 'number' || !Number.isSafeInteger(input.responseLength) || input.responseLength < 0 || input.responseLength > 65536) {
 		return undefined;

@@ -77,7 +77,7 @@ class RenameOperation implements IFileOperation {
 		}
 
 		await this._workingCopyFileService.move(moves, token, this._undoRedoInfo);
-		return new RenameOperation(undoes, { isUndoing: true }, this._workingCopyFileService, this._fileService);
+		return new RenameOperation(undoes, { isUndoing: true, skipParticipants: this._undoRedoInfo.skipParticipants }, this._workingCopyFileService, this._fileService);
 	}
 
 	toString(): string {
@@ -134,7 +134,7 @@ class CopyOperation implements IFileOperation {
 			undoes.push(new DeleteEdit(stat.resource, { recursive: true, folder: this._edits[i].options.folder || stat.isDirectory, ...edit.options }, false));
 		}
 
-		return this._instaService.createInstance(DeleteOperation, undoes, { isUndoing: true });
+		return this._instaService.createInstance(DeleteOperation, undoes, { isUndoing: true, skipParticipants: this._undoRedoInfo.skipParticipants });
 	}
 
 	toString(): string {
@@ -196,7 +196,7 @@ class CreateOperation implements IFileOperation {
 		await this._workingCopyFileService.createFolder(folderCreates, token, this._undoRedoInfo);
 		await this._workingCopyFileService.create(fileCreates, token, this._undoRedoInfo);
 
-		return this._instaService.createInstance(DeleteOperation, undoes, { isUndoing: true });
+		return this._instaService.createInstance(DeleteOperation, undoes, { isUndoing: true, skipParticipants: this._undoRedoInfo.skipParticipants });
 	}
 
 	toString(): string {
@@ -249,6 +249,7 @@ class DeleteOperation implements IFileOperation {
 			deletes.push({
 				resource: edit.oldUri,
 				recursive: edit.options.recursive,
+				rejectIfDirty: edit.options.rejectIfDirty,
 				useTrash: !edit.options.skipTrashBin && this._fileService.hasCapability(edit.oldUri, FileSystemProviderCapabilities.Trash) && this._configurationService.getValue<boolean>('files.enableTrash')
 			});
 
@@ -280,7 +281,7 @@ class DeleteOperation implements IFileOperation {
 		if (undoes.length === 0) {
 			return new Noop();
 		}
-		return this._instaService.createInstance(CreateOperation, undoes, { isUndoing: true });
+		return this._instaService.createInstance(CreateOperation, undoes, { isUndoing: true, skipParticipants: this._undoRedoInfo.skipParticipants });
 	}
 
 	toString(): string {
@@ -335,13 +336,14 @@ export class BulkFileEdits {
 		private readonly _progress: IProgress<void>,
 		private readonly _token: CancellationToken,
 		private readonly _edits: ResourceFileEdit[],
+		private readonly _skipFileOperationParticipants: boolean,
 		@IInstantiationService private readonly _instaService: IInstantiationService,
 		@IUndoRedoService private readonly _undoRedoService: IUndoRedoService,
 	) { }
 
 	async apply(): Promise<readonly URI[]> {
 		const undoOperations: IFileOperation[] = [];
-		const undoRedoInfo = { undoRedoGroupId: this._undoRedoGroup.id };
+		const undoRedoInfo = { undoRedoGroupId: this._undoRedoGroup.id, skipParticipants: this._skipFileOperationParticipants };
 
 		const edits: Array<RenameEdit | CopyEdit | DeleteEdit | CreateEdit> = [];
 		for (const edit of this._edits) {

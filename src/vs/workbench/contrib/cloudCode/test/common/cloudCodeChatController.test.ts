@@ -16,6 +16,7 @@ import { formatCloudCodePrompt, ICloudCodeAttachment, ICloudCodeContextProvider 
 import { CloudCodeChatMode, ICloudCodeEditProposal, ICloudCodeEditProvider, ICloudCodeEditTarget, ICloudCodeProposedEdit } from '../../common/cloudCodeEdits.js';
 import { ICloudCodeConversationStorage } from '../../common/cloudCodeConversations.js';
 import { ICloudCodeAgent } from '../../common/cloudCodeAgent.js';
+import { CloudCodeEditingSessionAction, CloudCodeEditingSessionStatus, ICloudCodeEditingSession, ICloudCodeEditingSessionView, ICloudCodeSessionChange } from '../../common/cloudCodeEditingSession.js';
 
 class TestView extends Disposable implements ICloudCodeChatView {
 	readonly draftAttachments = this._register(new Emitter<readonly ICloudCodeAttachment[]>());
@@ -33,6 +34,8 @@ class TestView extends Disposable implements ICloudCodeChatView {
 	readonly onDidChangeMode = this.changeMode.event;
 	readonly reviewEdit = this._register(new Emitter<{ id: string; action: 'preview' | 'accept' | 'reject' }>());
 	readonly onDidReviewEdit = this.reviewEdit.event;
+	readonly reviewEditingSession = this._register(new Emitter<{ id: string; action: CloudCodeEditingSessionAction }>());
+	readonly onDidReviewEditingSession = this.reviewEditingSession.event;
 	readonly requestAttachments = this._register(new Emitter<void | (() => Promise<readonly ICloudCodeAttachment[]>)>());
 	readonly onDidRequestAttachments = this.requestAttachments.event;
 	readonly removeAttachment = this._register(new Emitter<string>());
@@ -64,6 +67,12 @@ class TestView extends Disposable implements ICloudCodeChatView {
 	mode: CloudCodeChatMode = 'ask';
 	proposals: readonly ICloudCodeEditProposal[] = [];
 	busyEdits = false;
+	editingSessions: readonly ICloudCodeEditingSessionView[] = [];
+	busySessions = false;
+	setEditingSessions(sessions: readonly ICloudCodeEditingSessionView[], busy: boolean): void {
+		this.editingSessions = sessions;
+		this.busySessions = busy;
+	}
 	setEditMode(mode: CloudCodeChatMode): void { this.mode = mode; }
 	setEditProposals(proposals: readonly ICloudCodeEditProposal[], busy: boolean): void {
 		this.proposals = proposals;
@@ -133,6 +142,44 @@ class TestAgent implements ICloudCodeAgent {
 		const result = new DeferredPromise<Awaited<ReturnType<ICloudCodeAgent['run']>>>();
 		this.requests.push({ prompt, attachments, model, history, token, onProgress, result });
 		return result.p;
+	}
+}
+
+class TestEditingSession extends Disposable implements ICloudCodeEditingSession {
+	status: CloudCodeEditingSessionStatus = 'pending';
+	reviewed = false;
+	previewCount = 0;
+	applyCount = 0;
+	undoCount = 0;
+	previewResult: Promise<void> = Promise.resolve();
+	applyResult: Promise<void> = Promise.resolve();
+	undoResult: Promise<void> = Promise.resolve();
+	partialApply = false;
+	changes: readonly ICloudCodeSessionChange[] = [{ kind: 'edit', before: { root: 'project', path: 'main.ts', resource: 'file:///project/main.ts', content: 'before' }, after: { root: 'project', path: 'main.ts', resource: 'file:///project/main.ts', content: 'after' } }];
+	constructor(readonly id: string = 'task') { super(); }
+	get disposed(): boolean { return this._store.isDisposed; }
+	read(): ReturnType<ICloudCodeEditingSession['read']> { throw new Error('Unexpected read'); }
+	stage(): ReturnType<ICloudCodeEditingSession['stage']> { throw new Error('Unexpected stage'); }
+	summary(): ReturnType<ICloudCodeEditingSession['summary']> { return []; }
+	async preview(): Promise<void> {
+		this.previewCount++;
+		await this.previewResult;
+		if (this.disposed) { throw new Error('Task review was closed'); }
+		this.reviewed = true;
+	}
+	async apply(): Promise<void> {
+		this.applyCount++;
+		await this.applyResult;
+		if (this.disposed) { throw new Error('Task review was closed'); }
+		this.status = this.partialApply ? 'partial' : 'applied';
+		if (this.partialApply) { throw new Error('Some changes could not be applied'); }
+	}
+	reject(): void { this.status = 'rejected'; }
+	async undo(): Promise<void> {
+		this.undoCount++;
+		await this.undoResult;
+		if (this.disposed) { throw new Error('Task review was closed'); }
+		this.status = 'undone';
 	}
 }
 
@@ -971,6 +1018,170 @@ suite('CloudCodeChatController', () => {
 		});
 	});
 
+	async function prepareEditingSession(session = disposables.add(new TestEditingSession())): Promise<TestEditingSession> {
+		view.changeMode.fire('agent');
+		view.submit.fire('Update the feature');
+		await agent.requests.at(-1)!.result.complete({ text: 'Prepared the task changes.', attachments: [], edits: [], editingSession: session });
+		await settleEdits();
+		return session;
+	}
+
+	async function reviewSession(session: TestEditingSession, action: CloudCodeEditingSessionAction): Promise<void> {
+		view.reviewEditingSession.fire({ id: session.id, action });
+		await settleEdits();
+	}
+
+	test('task review requires a completed preview, blocks pending followups and ignores repeated clicks', async () => {
+		const session = await prepareEditingSession();
+		await reviewSession(session, 'accept');
+		view.submit.fire('Too early');
+		const preview = new DeferredPromise<void>();
+		session.previewResult = preview.p;
+		view.reviewEditingSession.fire({ id: session.id, action: 'preview' });
+		view.reviewEditingSession.fire({ id: session.id, action: 'preview' });
+		view.reviewEditingSession.fire({ id: session.id, action: 'accept' });
+		assert.deepStrictEqual({ previews: session.previewCount, applications: session.applyCount, requests: agent.requests.length, busy: view.busySessions, reviewed: view.editingSessions[0].reviewed }, {
+			previews: 1, applications: 0, requests: 1, busy: true, reviewed: false
+		});
+		await preview.complete();
+		await settleEdits();
+		const apply = new DeferredPromise<void>();
+		session.applyResult = apply.p;
+		view.reviewEditingSession.fire({ id: session.id, action: 'accept' });
+		view.reviewEditingSession.fire({ id: session.id, action: 'accept' });
+		await apply.complete();
+		await settleEdits();
+		assert.deepStrictEqual({ applications: session.applyCount, status: view.editingSessions[0].status, busy: view.busySessions, outcome: view.messages.at(-1)?.text }, {
+			applications: 1, status: 'applied', busy: false, outcome: 'Applied the task changes: main.ts. Read these files again before making further changes.'
+		});
+	});
+
+	test('a failed task preview keeps acceptance disabled and a retry restores the review flow', async () => {
+		const session = await prepareEditingSession();
+		session.previewResult = Promise.reject(new Error('The diff could not be opened'));
+		await reviewSession(session, 'preview');
+		await reviewSession(session, 'accept');
+		assert.deepStrictEqual({ reviewed: view.editingSessions[0].reviewed, error: view.editingSessions[0].error, busy: view.busySessions, applications: session.applyCount }, {
+			reviewed: false, error: 'The diff could not be opened', busy: false, applications: 0
+		});
+		session.previewResult = Promise.resolve();
+		await reviewSession(session, 'preview');
+		await reviewSession(session, 'accept');
+		assert.deepStrictEqual({ status: view.editingSessions[0].status, error: view.editingSessions[0].error }, { status: 'applied', error: undefined });
+	});
+
+	test('applied tasks retain undo across followups, and undo conflicts preserve the applied outcome', async () => {
+		const session = await prepareEditingSession();
+		await reviewSession(session, 'preview');
+		await reviewSession(session, 'accept');
+		view.submit.fire('Explain the changes');
+		assert.deepStrictEqual({ requests: agent.requests.length, disposed: session.disposed, status: view.editingSessions[0].status, appliedHistory: agent.requests[1].history[1].content.includes('Applied the task changes: main.ts.') }, {
+			requests: 2, disposed: false, status: 'applied', appliedHistory: true
+		});
+		await agent.requests[1].result.complete({ text: 'The feature now uses the new version.', attachments: [], edits: [] });
+		await settleEdits();
+		session.undoResult = Promise.reject(new Error('Your later changes overlap this task'));
+		await reviewSession(session, 'undo');
+		assert.deepStrictEqual({ status: view.editingSessions[0].status, error: view.editingSessions[0].error, busy: view.busySessions, falseUndoNotice: view.messages.some(message => message.text.startsWith('Undid the task')) }, {
+			status: 'applied', error: 'Your later changes overlap this task', busy: false, falseUndoNotice: false
+		});
+		session.undoResult = Promise.resolve();
+		await reviewSession(session, 'undo');
+		assert.deepStrictEqual({ status: view.editingSessions[0].status, outcome: view.messages.at(-1)?.text }, { status: 'undone', outcome: 'Undid the task changes: main.ts. Read these files again before making further changes.' });
+	});
+
+	test('partial application remains visible and recoverable with truthful followup history', async () => {
+		const session = await prepareEditingSession();
+		session.partialApply = true;
+		await reviewSession(session, 'preview');
+		await reviewSession(session, 'accept');
+		view.submit.fire('Inspect the current files');
+		assert.deepStrictEqual({ status: view.editingSessions[0].status, error: view.editingSessions[0].error, busy: view.busySessions, requests: agent.requests.length, history: agent.requests[1].history[1].content.includes('The task changes were only partly applied: main.ts. Read the current files again') }, {
+			status: 'partial', error: 'Some changes could not be applied', busy: false, requests: 2, history: true
+		});
+		await agent.requests[1].result.complete({ text: 'Inspected current state.', attachments: [], edits: [] });
+		await settleEdits();
+		await reviewSession(session, 'undo');
+		assert.deepStrictEqual({ status: view.editingSessions[0].status, undoCount: session.undoCount }, { status: 'undone', undoCount: 1 });
+	});
+
+	test('rejecting a task records that it was not applied and permits a fresh task', async () => {
+		const session = await prepareEditingSession();
+		await reviewSession(session, 'reject');
+		view.submit.fire('Try another approach');
+		assert.deepStrictEqual({ status: view.editingSessions[0].status, applications: session.applyCount, rejectedHistory: agent.requests[1].history[1].content.includes('Rejected the task changes: main.ts. These changes were not applied.') }, {
+			status: 'rejected', applications: 0, rejectedHistory: true
+		});
+		await agent.requests[1].result.complete({ text: 'Another approach.', attachments: [], edits: [] });
+		await settleEdits();
+	});
+
+	test('created files renamed during a task show and record their final destination', async () => {
+		const session = disposables.add(new TestEditingSession());
+		session.changes = [{ kind: 'create', before: { root: 'project', path: 'temporary.ts', resource: 'file:///project/temporary.ts', content: undefined }, after: { root: 'project', path: 'feature.ts', resource: 'file:///project/feature.ts', content: 'new feature' } }];
+		await prepareEditingSession(session);
+		await reviewSession(session, 'preview');
+		await reviewSession(session, 'accept');
+		assert.deepStrictEqual({ changes: view.editingSessions[0].changes, outcome: view.messages.at(-1)?.text }, {
+			changes: [{ kind: 'create', path: 'feature.ts' }], outcome: 'Applied the task changes: feature.ts. Read these files again before making further changes.'
+		});
+	});
+
+	test('account changes dispose task capabilities and suppress a late preview result', async () => {
+		const session = await prepareEditingSession();
+		const preview = new DeferredPromise<void>();
+		session.previewResult = preview.p;
+		view.reviewEditingSession.fire({ id: session.id, action: 'preview' });
+		service.stateEmitter.fire({ ...signedIn, account: { ...signedIn.account!, team: { id: 2, name: 'Other team' } } });
+		await preview.complete();
+		await settleEdits();
+		view.reviewEditingSession.fire({ id: session.id, action: 'accept' });
+		assert.deepStrictEqual({ disposed: session.disposed, sessions: view.editingSessions, messages: view.messages, applications: session.applyCount, error: view.error, busy: view.busySessions }, {
+			disposed: true, sessions: [], messages: [], applications: 0, error: undefined, busy: false
+		});
+	});
+
+	test('only five recent task reviews retain capabilities and eviction is explained', async () => {
+		const sessions: TestEditingSession[] = [];
+		for (let i = 0; i < 6; i++) {
+			const session = await prepareEditingSession(disposables.add(new TestEditingSession(`task-${i}`)));
+			sessions.push(session);
+			await reviewSession(session, 'preview');
+			await reviewSession(session, 'accept');
+		}
+		assert.deepStrictEqual({ retained: view.editingSessions.map(session => session.id), disposed: sessions.map(session => session.disposed), explained: view.messages.some(message => message.text.includes('oldest task review was closed')) }, {
+			retained: ['task-1', 'task-2', 'task-3', 'task-4', 'task-5'], disposed: [true, false, false, false, false, false], explained: true
+		});
+	});
+
+	test('archived tasks restore discussion without live apply or undo authority', async () => {
+		controller.dispose();
+		const values = new Map<string, string>();
+		const storage: ICloudCodeConversationStorage = { scope: account => `${account.user.id}:${account.team.id}`, read: scope => values.get(scope), write: (scope, value) => { values.set(scope, value); } };
+		controller = disposables.add(new CloudCodeChatController(view, contextProvider, editProvider, agent, storage, service));
+		await controller.initialize();
+		const session = await prepareEditingSession();
+		await reviewSession(session, 'preview');
+		await reviewSession(session, 'accept');
+		controller.dispose();
+		controller = disposables.add(new CloudCodeChatController(view, contextProvider, editProvider, agent, storage, service));
+		await controller.initialize();
+		view.reviewEditingSession.fire({ id: session.id, action: 'undo' });
+		assert.deepStrictEqual({ sessions: view.editingSessions, disposed: session.disposed, undoCount: session.undoCount, appliedNotice: view.messages.some(message => message.text.startsWith('Applied the task changes:')) }, {
+			sessions: [], disposed: true, undoCount: 0, appliedNotice: true
+		});
+	});
+
+	test('stopped Agent results dispose late task sessions', async () => {
+		view.changeMode.fire('agent');
+		view.submit.fire('Prepare task changes');
+		view.stop.fire();
+		const session = disposables.add(new TestEditingSession());
+		await agent.requests[0].result.complete({ text: 'Late changes.', attachments: [], edits: [], editingSession: session });
+		await settleEdits();
+		assert.deepStrictEqual({ disposed: session.disposed, sessions: view.editingSessions, incomplete: view.messages.at(-1)?.incomplete }, { disposed: true, sessions: [], incomplete: true });
+	});
+
 	test('Stop cancels Agent work and prevents another task until resource cleanup finishes', async () => {
 		view.changeMode.fire('agent');
 		view.submit.fire('First task');
@@ -1003,10 +1214,11 @@ suite('CloudCodeChatController', () => {
 			}
 			const messages = view.messages;
 			request.onProgress('Private filename');
-			await request.result.complete({ text: 'Private answer', attachments: [editableAttachment], edits: [{ target: { token: 'private', attachment: editableAttachment }, replacement: 'private edit' }] });
+			const session = disposables.add(new TestEditingSession());
+			await request.result.complete({ text: 'Private answer', attachments: [editableAttachment], edits: [{ target: { token: 'private', attachment: editableAttachment }, replacement: 'private edit' }], editingSession: session });
 			await settleEdits();
-			assert.deepStrictEqual({ cancelled: request.token.isCancellationRequested, messages: view.messages, proposals: view.proposals, applications: editProvider.applications }, {
-				cancelled: true, messages, proposals: [], applications: []
+			assert.deepStrictEqual({ cancelled: request.token.isCancellationRequested, messages: view.messages, proposals: view.proposals, applications: editProvider.applications, sessionDisposed: session.disposed, sessions: view.editingSessions }, {
+				cancelled: true, messages, proposals: [], applications: [], sessionDisposed: true, sessions: []
 			});
 		});
 	}

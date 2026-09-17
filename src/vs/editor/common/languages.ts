@@ -2090,6 +2090,8 @@ export interface WorkspaceFileEditOptions {
 	folder?: boolean;
 	skipTrashBin?: boolean;
 	maxSize?: number;
+	/** Do not discard dirty working copies when deleting, including inverse deletes during undo. */
+	rejectIfDirty?: boolean;
 
 	/**
 	 * @internal

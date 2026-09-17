@@ -1,14 +1,14 @@
-# CloudCode Agent protocol (PR1)
+# CloudCode Agent protocol
 
 Agent mode uses native function calls through the CloudCode inference endpoint. Ask and Edit mode retain their existing text transport. Models used in Agent mode must support OpenAI-compatible function tools; the desktop does not silently fall back to interpreting arbitrary answer text as executable JSON.
 
 ## Request and response
 
-The desktop sends `tools`, `tool_choice: auto`, `parallel_tool_calls: false` and typed `system`, `user`, `assistant` and `tool` messages. Supported functions remain read-only `list`, `findFiles`, `search`, `read`, plus `propose` for user-reviewed edits. Each tool result is paired with its assistant call ID. Provider reasoning content and ordered reasoning detail blocks are preserved unchanged within active tool turns, including through buffered responses; they are not displayed, logged to Sentry, or saved in the chat archive. The shared process validates the request before sending it through the existing authenticated, billed endpoint.
+The desktop sends `tools`, `tool_choice: auto`, `parallel_tool_calls: false` and typed `system`, `user`, `assistant` and `tool` messages. Agent mode exposes `list`, `findFiles`, `search`, `read`, `apply_patch`, `create_file`, `rename_file` and `delete_file`. Writes remain staged until the user reviews and accepts a [multi-file editing session](cloudcode-editing-sessions.md). The legacy runner without an editing-session factory retains `propose`. Each tool result is paired with its assistant call ID. Provider reasoning content and ordered reasoning detail blocks are preserved unchanged within active tool turns, including through buffered responses; they are not displayed, logged to Sentry, or saved in the chat archive. The shared process validates the request before sending it through the existing authenticated, billed endpoint.
 
 The Agent stream collector reconstructs fragmented function names, IDs and arguments. It requires the stream terminator and a completion reason before returning a response. Incomplete transport responses never authorize a local tool. `finish_reason: length` discards partial calls; a bounded retry can request more output. Explicit model filtering, transport failures and user cancellations do not trigger automatic retries.
 
-Invalid arguments and invalid proposals receive fixed error codes and corrective feedback. At most two correction attempts are permitted across a task, within the existing twelve-call and three-minute limits. No invalid call executes and no invalid proposal acquires an editable target. Terminal failures still use the sanitized Sentry/local diagnostics path. A recovered mistake does not create a terminal failure report.
+Invalid arguments and rejected staged operations receive fixed error codes and corrective feedback. At most two correction attempts are permitted across a task. Editing sessions allow 24 model calls and five minutes; the legacy runner retains twelve calls and three minutes. No invalid call executes and no invalid proposal acquires an editable target. Terminal failures still use the sanitized Sentry/local diagnostics path. A recovered mistake does not create a terminal failure report.
 
 Agent output starts at 4096 tokens; after truncation it may increase to 8192. Each retry is an ordinary billed inference request. There is no hidden provider retry of interrupted streams.
 
@@ -30,4 +30,4 @@ Automated checks cover malformed calls, truncation, bounded correction, fragment
 
 ## Remaining milestones
 
-PR1 does not add automatic editing, new-file creation, terminal commands or test execution. Existing snapshot limits (five attachments / 24 KiB combined) and task limits remain. Editing sessions/checkpoints and the execution/test/fix loop are the next milestones; model-sized context, longer-task budgets and resumable execution require subsequent work.
+PR2 adds staged multi-file editing sessions, combined review and task undo. Terminal commands and the execution/test/fix loop remain the next milestone. Model-sized context and resumable execution require subsequent work; Plan mode is separate.

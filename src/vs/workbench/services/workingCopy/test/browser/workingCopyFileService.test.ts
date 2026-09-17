@@ -42,6 +42,48 @@ suite('WorkingCopyFileService', () => {
 		await testDelete([toResource.call(this, '/path/file.txt')]);
 	});
 
+	test('guarded delete preserves edits arriving during an asynchronous before event', async function () {
+		const model = disposables.add(instantiationService.createInstance(TextFileEditorModel, toResource.call(this, '/path/file.txt'), 'utf8', undefined));
+		(<ITestTextFileEditorModelManager>accessor.textFileService.files).add(model.resource, model);
+		await model.resolve();
+		let deletes = 0;
+		let failures = 0;
+		let reverts = 0;
+		accessor.fileService.del = async () => { deletes++; };
+		disposables.add(model.onDidRevert(() => { reverts++; }));
+		disposables.add(accessor.workingCopyFileService.onDidFailWorkingCopyFileOperation(() => { failures++; }));
+		disposables.add(accessor.workingCopyFileService.onWillRunWorkingCopyFileOperation(e => {
+			e.waitUntil((async () => {
+				await Promise.resolve();
+				model.textEditorModel!.setValue('User changes during deletion');
+			})());
+		}));
+
+		await assert.rejects(accessor.workingCopyFileService.delete([{ resource: model.resource, rejectIfDirty: true }], CancellationToken.None), /unsaved changes/);
+		assert.deepStrictEqual({ deletes, failures, reverts, dirty: model.isDirty(), content: model.textEditorModel!.getValue() }, {
+			deletes: 0, failures: 1, reverts: 0, dirty: true, content: 'User changes during deletion'
+		});
+	});
+
+	test('guarded delete rechecks each target after a previous filesystem delete yields', async function () {
+		const first = disposables.add(instantiationService.createInstance(TextFileEditorModel, toResource.call(this, '/path/first.txt'), 'utf8', undefined));
+		const second = disposables.add(instantiationService.createInstance(TextFileEditorModel, toResource.call(this, '/path/second.txt'), 'utf8', undefined));
+		for (const model of [first, second]) {
+			(<ITestTextFileEditorModelManager>accessor.textFileService.files).add(model.resource, model);
+			await model.resolve();
+		}
+		const deleted: string[] = [];
+		accessor.fileService.del = async resource => {
+			deleted.push(resource.toString());
+			await Promise.resolve();
+			second.textEditorModel!.setValue('New unsaved work');
+		};
+		await assert.rejects(accessor.workingCopyFileService.delete([first, second].map(model => ({ resource: model.resource, rejectIfDirty: true })), CancellationToken.None), /unsaved changes/);
+		assert.deepStrictEqual({ deleted, dirty: second.isDirty(), content: second.textEditorModel!.getValue() }, {
+			deleted: [first.resource.toString()], dirty: true, content: 'New unsaved work'
+		});
+	});
+
 	test('delete multiple - dirty files', async function () {
 		await testDelete([
 			toResource.call(this, '/path/file1.txt'),

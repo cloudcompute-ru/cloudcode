@@ -14,7 +14,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { ITextModel } from '../../../../editor/common/model.js';
 import { IModelService } from '../../../../editor/common/services/model.js';
 import { localize } from '../../../../nls.js';
-import { IFileService, IFileStatWithPartialMetadata } from '../../../../platform/files/common/files.js';
+import { FileOperationError, FileOperationResult, IFileService, IFileStatWithPartialMetadata } from '../../../../platform/files/common/files.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IWorkspaceContextService, IWorkspaceFolder } from '../../../../platform/workspace/common/workspace.js';
 import { IWorkspaceTrustManagementService } from '../../../../platform/workspace/common/workspaceTrust.js';
@@ -115,6 +115,53 @@ class CloudCodeAgentWorkspaceSession implements ICloudCodeAgentWorkspaceSession 
 		return undefined;
 	}
 
+
+	/** Checks edit capabilities without reading source or bypassing native ignore rules. */
+	async authorizeEditPath(rootId: string, path: string, token: CancellationToken, requireSearchEligibility = true): Promise<{ resource: string; exists: boolean }> {
+		try {
+			return await this.authorizeEditPathImpl(rootId, path, token, requireSearchEligibility);
+		} catch (error) {
+			this.check(token);
+			if (error instanceof CloudCodeAgentWorkspaceError || error instanceof CancellationError) {
+				throw error;
+			}
+			throw new CloudCodeAgentWorkspaceError(localize('cloudCode.agent.readFailed', "Could not explore this project path. It may be unavailable, binary, or too large."));
+		}
+	}
+
+	private async authorizeEditPathImpl(rootId: string, path: string, token: CancellationToken, requireSearchEligibility: boolean): Promise<{ resource: string; exists: boolean }> {
+		this.check(token);
+		this.validatePath(path);
+		const index = this.roots.findIndex(root => root.id === rootId);
+		if (index < 0) {
+			throw new CloudCodeAgentWorkspaceError(localize('cloudCode.agent.invalidRoot', "Choose one of the available workspace root IDs."));
+		}
+		const root = this.folders[index].uri;
+		const resource = joinPath(root, path);
+		// Only the final leaf may be absent. Missing/linked parents never grant a capability.
+		const separator = path.lastIndexOf('/');
+		const parent = await this.assertSafePath(root, separator < 0 ? '' : path.slice(0, separator), token);
+		if (!parent.isDirectory) {
+			throw new CloudCodeAgentWorkspaceError(localize('cloudCode.agent.notDirectory', "Choose a project directory to list."));
+		}
+		let stat: IFileStatWithPartialMetadata;
+		try {
+			stat = await raceCancellationError(this.fileService.stat(resource), token);
+		} catch (error) {
+			this.check(token);
+			if (error instanceof FileOperationError && error.fileOperationResult === FileOperationResult.FILE_NOT_FOUND) {
+				return { resource: resource.toString(), exists: false };
+			}
+			throw new CloudCodeAgentWorkspaceError(localize('cloudCode.agent.readFailed', "Could not explore this project path. It may be unavailable, binary, or too large."));
+		}
+		this.check(token);
+		if (!stat.isFile || stat.isSymbolicLink || (requireSearchEligibility && !await this.isEligible(root, path, token))) {
+			throw new CloudCodeAgentWorkspaceError(localize('cloudCode.agent.unavailableFile', "This file is unavailable or excluded by project search settings or ignore files."));
+		}
+		this.check(token);
+		return { resource: resource.toString(), exists: true };
+	}
+
 	async execute(call: CloudCodeAgentToolCall, token: CancellationToken): Promise<ICloudCodeAgentToolResult> {
 		this.check(token);
 		const rootIndex = this.roots.findIndex(root => root.id === call.root);
@@ -170,7 +217,7 @@ class CloudCodeAgentWorkspaceSession implements ICloudCodeAgentWorkspaceSession 
 
 	private validatePath(path: string, allowEmpty = false): void {
 		const segments = path.split('/');
-		if ((!path && !allowEmpty) || path.length > 1024 || /[\\:\x00-\x1f\x7f]/.test(path) || (path && segments.some(segment => !segment || segment === '.' || segment === '..')) || segments.length > 40) {
+		if ((!path && !allowEmpty) || path.length > 1024 || /[\\:\x00-\x1f\x7f]/.test(path) || (path && segments.some(segment => !segment || segment === '.' || segment === '..' || /[. ]$/.test(segment) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(segment))) || segments.length > 40) {
 			throw new CloudCodeAgentWorkspaceError(localize('cloudCode.agent.invalidPath', "Use a relative project path with forward slashes and no parent traversal."));
 		}
 		if (segments.some(segment => excludedDirectories.includes(segment.toLowerCase())) || segments.some(segment => excludedFiles.some(pattern => match(pattern, segment, { ignoreCase: true })))) {

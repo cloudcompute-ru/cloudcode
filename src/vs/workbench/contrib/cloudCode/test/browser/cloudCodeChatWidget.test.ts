@@ -23,6 +23,7 @@ import { CloudCodeChatWidget } from '../../browser/cloudCodeChatWidget.js';
 import { CloudCodeComposer } from '../../browser/cloudCodeComposer.js';
 import { CloudCodeContext } from '../../browser/cloudCodeContext.js';
 import { ICloudCodeAttachment, mergeCloudCodeAttachments } from '../../common/cloudCodeChatContext.js';
+import { CloudCodeEditingSessionAction, ICloudCodeEditingSessionView } from '../../common/cloudCodeEditingSession.js';
 
 suite('CloudCode inline composer', () => {
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
@@ -110,6 +111,91 @@ suite('CloudCodeChatWidget thinking state', () => {
 
 	test('starts in Agent mode', () => {
 		assert.strictEqual(widget.domNode.querySelector('.cloudcode-chat-mode')?.textContent, 'Agent');
+	});
+
+	const task: ICloudCodeEditingSessionView = {
+		id: 'task', status: 'pending', reviewed: false, changes: [
+			{ kind: 'edit', path: 'main.ts' }, { kind: 'create', path: 'new.ts' },
+			{ kind: 'rename', path: 'old.ts', newPath: 'renamed.ts' }, { kind: 'delete', path: 'unused.ts' }
+		]
+	};
+
+	function taskButton(action: CloudCodeEditingSessionAction): HTMLElement {
+		return widget.domNode.querySelector<HTMLElement>(`[data-session-action="${action}"]`)!;
+	}
+
+	test('task review shows a combined file list, gates acceptance and blocks sending until reviewed', () => {
+		const actions: string[] = [];
+		const prompts: string[] = [];
+		disposables.add(widget.onDidReviewEditingSession(event => actions.push(event.action)));
+		disposables.add(widget.onDidSubmit(prompt => prompts.push(prompt)));
+		widget.setDraft('Follow up');
+		widget.setEditingSessions([task], false);
+		taskButton('accept').click();
+		taskButton('preview').click();
+		widget.domNode.querySelector<HTMLElement>('[role="textbox"]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+		assert.deepStrictEqual({ files: Array.from(widget.domNode.querySelectorAll('.cloudcode-chat-task-files li')).map(file => file.textContent), actions, prompts, acceptDisabled: taskButton('accept').getAttribute('aria-disabled') }, {
+			files: ['Editmain.ts', 'Createnew.ts', 'Renameold.ts → renamed.ts', 'Deleteunused.ts'], actions: ['preview'], prompts: [], acceptDisabled: 'true'
+		});
+		widget.setEditingSessions([{ ...task, reviewed: true }], false);
+		taskButton('accept').click();
+		assert.deepStrictEqual(actions, ['preview', 'accept']);
+	});
+
+	test('busy task review disables all review actions without losing its visible files', () => {
+		const actions: string[] = [];
+		disposables.add(widget.onDidReviewEditingSession(event => actions.push(event.action)));
+		widget.setEditingSessions([{ ...task, reviewed: true }], true);
+		for (const action of ['preview', 'accept', 'reject'] as const) {
+			taskButton(action).click();
+		}
+		widget.setEditProposals([], false);
+		assert.deepStrictEqual({ actions, count: widget.domNode.querySelectorAll('.cloudcode-chat-task-files li').length, busy: widget.domNode.querySelector('.cloudcode-chat-editing-sessions')?.getAttribute('aria-busy'), acceptDisabled: taskButton('accept').getAttribute('aria-disabled') }, {
+			actions: [], count: 4, busy: 'true', acceptDisabled: 'true'
+		});
+	});
+
+	test('task review restores keyboard focus after busy updates without stealing it from the diff editor', () => {
+		widget.setEditingSessions([task], false);
+		taskButton('preview').focus();
+		widget.setEditingSessions([task], true);
+		widget.setEditingSessions([{ ...task, reviewed: true }], false);
+		assert.strictEqual(document.activeElement, taskButton('preview'));
+		widget.setEditingSessions([task], true);
+		const editor = document.createElement('button');
+		document.body.appendChild(editor);
+		disposables.add(toDisposable(() => editor.remove()));
+		editor.focus();
+		widget.setEditingSessions([{ ...task, reviewed: true }], false);
+		assert.strictEqual(document.activeElement, editor);
+	});
+
+	test('partial and applied task outcomes retain Undo and allow a followup', () => {
+		const actions: string[] = [];
+		const prompts: string[] = [];
+		disposables.add(widget.onDidReviewEditingSession(event => actions.push(event.action)));
+		disposables.add(widget.onDidSubmit(prompt => prompts.push(prompt)));
+		widget.setEditingSessions([{ ...task, status: 'partial', reviewed: true, error: 'Some changes could not be applied' }], false);
+		const partialHint = widget.domNode.querySelector('.cloudcode-chat-editing-session .cloudcode-chat-hint')?.textContent;
+		taskButton('undo').click();
+		widget.setDraft('Inspect current files');
+		widget.domNode.querySelector<HTMLElement>('[role="textbox"]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+		widget.setEditingSessions([{ ...task, status: 'applied', reviewed: true }], false);
+		assert.deepStrictEqual({ partialHint, actions, prompts, accept: widget.domNode.querySelector('[data-session-action="accept"]'), undoDisabled: taskButton('undo').getAttribute('aria-disabled') }, {
+			partialHint: 'Some changes were applied. You can undo this task or continue from the current files.', actions: ['undo'], prompts: ['Inspect current files'], accept: null, undoDisabled: 'false'
+		});
+		widget.setSession({ status: 'signedOut' });
+		taskButton('undo').click();
+		assert.deepStrictEqual(actions, ['undo']);
+	});
+
+	test('task paths and errors render as text and rejected tasks have no live actions', () => {
+		widget.setEditingSessions([{ ...task, changes: [{ kind: 'create', path: '<img src=x onerror=alert(1)>' }], error: '<script>bad()</script>' }], false);
+		assert.deepStrictEqual({ images: widget.domNode.querySelectorAll('.cloudcode-chat-editing-sessions img').length, path: widget.domNode.querySelector('.cloudcode-chat-task-path')?.textContent, error: widget.domNode.querySelector('.cloudcode-chat-editing-session .cloudcode-chat-error')?.textContent }, {
+			images: 0, path: '<img src=x onerror=alert(1)>', error: '<script>bad()</script>'
+		});
+		widget.setEditingSessions([{ ...task, status: 'rejected' }], false);
+		assert.strictEqual(widget.domNode.querySelectorAll('[data-session-action]').length, 0);
 	});
 
 	test('dropping HTML inserts only its plain text', () => {

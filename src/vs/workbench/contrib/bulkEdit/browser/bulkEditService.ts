@@ -64,6 +64,7 @@ class BulkEdit {
 		private readonly _undoRedoGroup: UndoRedoGroup,
 		private readonly _undoRedoSource: UndoRedoSource | undefined,
 		private readonly _confirmBeforeUndo: boolean,
+		private readonly _skipFileOperationParticipants: boolean,
 		@IInstantiationService private readonly _instaService: IInstantiationService,
 		@ILogService private readonly _logService: ILogService,
 	) {
@@ -143,7 +144,7 @@ class BulkEdit {
 
 	private async _performFileEdits(edits: ResourceFileEdit[], undoRedoGroup: UndoRedoGroup, undoRedoSource: UndoRedoSource | undefined, confirmBeforeUndo: boolean, progress: IProgress<void>): Promise<readonly URI[]> {
 		this._logService.debug('_performFileEdits', JSON.stringify(edits));
-		const model = this._instaService.createInstance(BulkFileEdits, this._label || localize('workspaceEdit', "Workspace Edit"), this._code || 'undoredo.workspaceEdit', undoRedoGroup, undoRedoSource, confirmBeforeUndo, progress, this._token, edits);
+		const model = this._instaService.createInstance(BulkFileEdits, this._label || localize('workspaceEdit', "Workspace Edit"), this._code || 'undoredo.workspaceEdit', undoRedoGroup, undoRedoSource, confirmBeforeUndo, progress, this._token, edits, this._skipFileOperationParticipants);
 		return await model.apply();
 	}
 
@@ -252,7 +253,8 @@ export class BulkEditService implements IBulkEditService {
 			edits,
 			undoRedoGroup,
 			options?.undoRedoSource,
-			!!options?.confirmBeforeUndo
+			!!options?.confirmBeforeUndo,
+			!!options?.skipFileOperationParticipants
 		);
 
 		let listener: IDisposable | undefined;
