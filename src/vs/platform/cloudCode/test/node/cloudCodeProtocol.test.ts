@@ -8,7 +8,8 @@ import { createHash } from 'crypto';
 import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { isCancellationError } from '../../../../base/common/errors.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
-import { CLOUDCODE_REDIRECT_URI, CloudCodeEventStream, CloudCodeLoopback, cloudCodeOrigin, createCloudCodeAuthorization, parseCloudCodeAuthConfiguration } from '../../node/cloudCodeProtocol.js';
+import { CLOUDCODE_REDIRECT_URI, CloudCodeAgentEventStream, CloudCodeEventStream, CloudCodeLoopback, cloudCodeOrigin, createCloudCodeAgentPayload, createCloudCodeAuthorization, parseCloudCodeAuthConfiguration } from '../../node/cloudCodeProtocol.js';
+import { ICloudCodeAgentMessage, ICloudCodeToolDefinition } from '../../common/cloudCode.js';
 
 suite('CloudCode protocol', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
@@ -177,5 +178,156 @@ suite('CloudCode protocol', () => {
 		stream.accept(delta);
 		stream.accept(delta);
 		assert.throws(() => stream.accept(delta), /limit/);
+	});
+
+	const tools: readonly ICloudCodeToolDefinition[] = [{ name: 'read', description: 'Read a file', parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'], additionalProperties: false } }];
+	const user: ICloudCodeAgentMessage = { role: 'user', content: 'Read the project' };
+	const call = { id: 'call_1', name: 'read', arguments: '{"path":"README.md"}' };
+
+	function agentEvent(delta: object, finishReason: string | null = null): string {
+		return `data: ${JSON.stringify({ choices: [{ index: 0, delta, finish_reason: finishReason }] })}\n\n`;
+	}
+
+	test('collects fragmented UTF-8 tool names, IDs, arguments and the finish reason', () => {
+		const stream = new CloudCodeAgentEventStream();
+		const body = agentEvent({ role: 'assistant', tool_calls: [{ index: 0, id: 'call_', type: 'function', function: { name: 're', arguments: '{"path":' } }] })
+			+ agentEvent({ tool_calls: [{ index: 0, id: '1', function: { name: 'ad', arguments: '"Привет.md"}' } }] })
+			+ agentEvent({}, 'tool_calls') + 'data: {"choices":[],"usage":{"total_tokens":10}}\n\ndata: [DONE]\n\n';
+		for (const byte of new TextEncoder().encode(body)) { stream.accept(Uint8Array.of(byte)); }
+		assert.deepStrictEqual(stream.finish(), { cancelled: false, text: '', toolCalls: [{ id: 'call_1', name: 'read', arguments: '{"path":"Привет.md"}' }], finishReason: 'tool_calls' });
+	});
+
+	test('returns ordinary text and suppresses truncated control data', () => {
+		const text = new CloudCodeAgentEventStream();
+		text.accept(new TextEncoder().encode(agentEvent({ content: 'Done' }) + agentEvent({}, 'stop') + 'data: [DONE]\n\n'));
+		const truncated = new CloudCodeAgentEventStream();
+		truncated.accept(new TextEncoder().encode(agentEvent({ tool_calls: [{ index: 0, function: { arguments: '{"path":' } }] }, 'length') + 'data: [DONE]\n\n'));
+		assert.deepStrictEqual([text.finish(), truncated.finish()], [
+			{ cancelled: false, text: 'Done', toolCalls: [], finishReason: 'stop' },
+			{ cancelled: false, text: '', toolCalls: [], finishReason: 'length' }
+		]);
+	});
+
+	test('replays DeepSeek reasoning and ordered signed OpenRouter blocks unchanged across a tool result', () => {
+		const details = [
+			{ type: 'reasoning.text', text: 'private prefix', index: 0, signature: null },
+			{ type: 'reasoning.text', text: 'private suffix', index: 0, signature: 'signed-value' },
+			{ type: 'reasoning.encrypted', data: 'encrypted-value', index: 1, id: 'r1', format: 'openai-responses-v1' }
+		];
+		const stream = new CloudCodeAgentEventStream();
+		stream.accept(new TextEncoder().encode(agentEvent({ reasoning_content: 'private ', reasoning_details: [details[0]] })
+			+ agentEvent({ reasoning_content: 'continuation', reasoning_details: details.slice(1) })
+			+ agentEvent({ tool_calls: [{ index: 0, id: call.id, type: 'function', function: { name: call.name, arguments: call.arguments } }] }, 'tool_calls') + 'data: [DONE]\n\n'));
+		const response = stream.finish();
+		const payload = createCloudCodeAgentPayload('model', [user,
+			{ role: 'assistant', content: response.text, toolCalls: response.toolCalls, reasoningContent: response.reasoningContent, reasoningDetails: response.reasoningDetails },
+			{ role: 'tool', content: '{}', toolCallId: call.id }
+		], tools);
+		assert.deepStrictEqual({ text: response.text, reasoning: payload.messages[1].reasoning_content, details: payload.messages[1].reasoning_details }, {
+			text: '', reasoning: 'private continuation', details
+		});
+	});
+
+	test('supports the OpenRouter reasoning alias and omits truncated reasoning from executable responses', () => {
+		const complete = new CloudCodeAgentEventStream();
+		complete.accept(new TextEncoder().encode(agentEvent({ reasoning: 'opaque continuation', content: 'Done' }, 'stop') + 'data: [DONE]\n\n'));
+		const truncated = new CloudCodeAgentEventStream();
+		truncated.accept(new TextEncoder().encode(agentEvent({ reasoning_content: 'partial', reasoning_details: [{ data: 'partial' }] }, 'length') + 'data: [DONE]\n\n'));
+		assert.deepStrictEqual([complete.finish(), truncated.finish()], [
+			{ cancelled: false, text: 'Done', toolCalls: [], finishReason: 'stop', reasoningContent: 'opaque continuation' },
+			{ cancelled: false, text: '', toolCalls: [], finishReason: 'length' }
+		]);
+	});
+
+	test('rejects misplaced, malformed and oversized hidden reasoning without leaking it in errors', () => {
+		for (const message of [
+			{ ...user, reasoningContent: 'private-data' },
+			{ ...user, reasoningDetails: [{ data: 'private-data' }] },
+			{ role: 'assistant', content: '', reasoningContent: '界'.repeat(22000) },
+			{ role: 'assistant', content: '', reasoningDetails: [{ data: '界'.repeat(22000) }] },
+			{ role: 'assistant', content: '', reasoningDetails: [{ data: () => 'private-data' }] }
+		] as ICloudCodeAgentMessage[]) {
+			assert.throws(() => createCloudCodeAgentPayload('model', [user, message], tools), error => error instanceof Error && !error.message.includes('private-data'));
+		}
+		for (const delta of [{ reasoning_content: {} }, { reasoning_details: ['private-data'] }, { reasoning_content: 'x'.repeat(65000), content: 'x'.repeat(537) }]) {
+			const stream = new CloudCodeAgentEventStream();
+			assert.throws(() => stream.accept(new TextEncoder().encode(agentEvent(delta))), error => error instanceof Error && !error.message.includes('private-data'));
+		}
+	});
+
+	test('rejects unfinished and malformed Agent control streams without forwarding their content', () => {
+		const part = { index: 0, id: 'call_1', type: 'function', function: { name: 'read', arguments: '{}' } };
+		for (const body of [
+			agentEvent({ tool_calls: [part] }, 'tool_calls'),
+			agentEvent({ tool_calls: [part] }) + 'data: [DONE]\n\n',
+			agentEvent({ tool_calls: [{ ...part, id: '' }] }, 'tool_calls') + 'data: [DONE]\n\n',
+			agentEvent({ tool_calls: [{ ...part, index: 8 }] }, 'tool_calls') + 'data: [DONE]\n\n',
+			agentEvent({ tool_calls: [{ ...part, index: 1 }] }, 'tool_calls') + 'data: [DONE]\n\n',
+			agentEvent({ tool_calls: [part, { ...part, index: 1 }] }, 'tool_calls') + 'data: [DONE]\n\n',
+			agentEvent({ tool_calls: [{ ...part, function: { name: 'read', arguments: {} } }] }, 'tool_calls') + 'data: [DONE]\n\n',
+			agentEvent({ tool_calls: [part] }, 'stop') + 'data: [DONE]\n\n',
+			agentEvent({}, 'stop') + agentEvent({ tool_calls: [part] }) + 'data: [DONE]\n\n',
+			'data: {"choices":"private upstream data"}\n\ndata: [DONE]\n\n',
+		]) {
+			const stream = new CloudCodeAgentEventStream();
+			assert.throws(() => { stream.accept(new TextEncoder().encode(body)); stream.finish(); }, error => error instanceof Error && !error.message.includes('private upstream data'));
+		}
+	});
+
+	test('returns complete empty arguments for bounded model correction', () => {
+		const stream = new CloudCodeAgentEventStream();
+		stream.accept(new TextEncoder().encode(agentEvent({ tool_calls: [{ index: 0, id: 'call_empty', type: 'function', function: { name: 'read', arguments: '' } }] }, 'tool_calls') + 'data: [DONE]\n\n'));
+		assert.deepStrictEqual(stream.finish().toolCalls, [{ id: 'call_empty', name: 'read', arguments: '' }]);
+	});
+
+	test('bounds Agent output by UTF-8 bytes across multiple tool calls', () => {
+		const stream = new CloudCodeAgentEventStream();
+		stream.accept(new TextEncoder().encode(agentEvent({ tool_calls: [{ index: 0, id: 'a', function: { name: 'read', arguments: '界'.repeat(10000) } }] })));
+		assert.throws(() => stream.accept(new TextEncoder().encode(agentEvent({ tool_calls: [{ index: 1, id: 'b', function: { name: 'read', arguments: '界'.repeat(12000) } }] }))), /limit/);
+	});
+
+	test('serializes native tool definitions, paired results and Agent output limits', () => {
+		const payload = createCloudCodeAgentPayload('model', [{ role: 'system', content: 'Instructions' }, user, { role: 'assistant', content: '', toolCalls: [call] }, { role: 'tool', content: 'File contents', toolCallId: call.id }], tools);
+		assert.deepStrictEqual(payload, {
+			model: 'model', messages: [
+				{ role: 'system', content: 'Instructions' }, { role: 'user', content: 'Read the project' },
+				{ role: 'assistant', content: '', tool_calls: [{ id: call.id, type: 'function', function: { name: call.name, arguments: call.arguments } }] },
+				{ role: 'tool', content: 'File contents', tool_call_id: call.id },
+			], tools: [{ type: 'function', function: tools[0] }], tool_choice: 'auto', parallel_tool_calls: false, stream: true, max_tokens: 4096, stream_options: { include_usage: true }
+		});
+		assert.strictEqual(createCloudCodeAgentPayload('model', [user], tools, 8192).max_tokens, 8192);
+	});
+
+	test('rejects orphan, duplicate, interleaved or incomplete tool messages at the IPC boundary', () => {
+		const assistant: ICloudCodeAgentMessage = { role: 'assistant', content: '', toolCalls: [call] };
+		const result: ICloudCodeAgentMessage = { role: 'tool', content: '{}', toolCallId: call.id };
+		for (const messages of [
+			[user, result], [user, assistant], [user, assistant, user, result], [user, assistant, result, result],
+			[user, assistant, result, assistant, result], [user, { ...assistant, toolCalls: [{ ...call, name: 'invalid name' }] }, result],
+			[user, { ...user, toolCalls: [call] }], [user, { ...user, toolCallId: call.id }],
+			[user, { role: 'system', content: 'Late instructions' }], [user, { ...assistant, images: [] }],
+		] as ICloudCodeAgentMessage[][]) {
+			assert.throws(() => createCloudCodeAgentPayload('model', messages, tools), /Agent request/);
+		}
+	});
+
+	test('allows error feedback for an unsupported historical function without advertising it as a tool', () => {
+		const payload = createCloudCodeAgentPayload('model', [user, { role: 'assistant', content: '', toolCalls: [{ ...call, name: 'unknown_tool' }] }, { role: 'tool', content: '{"error":"Unsupported tool"}', toolCallId: call.id }], tools);
+		assert.deepStrictEqual({ calls: payload.messages[1].tool_calls, definitions: payload.tools.map(tool => tool.function.name) }, {
+			calls: [{ id: call.id, type: 'function', function: { name: 'unknown_tool', arguments: call.arguments } }], definitions: ['read']
+		});
+	});
+
+	test('checks request counts, schema bounds and UTF-8 budgets without truncating payloads', () => {
+		const input = Array.from({ length: 128 }, () => user);
+		assert.strictEqual(createCloudCodeAgentPayload('model', input, tools).messages.length, 128);
+		for (const execute of [
+			() => createCloudCodeAgentPayload('model', [...input, user], tools),
+			() => createCloudCodeAgentPayload('model', Array.from({ length: 4 }, () => ({ ...user, content: '界'.repeat(25000) })), tools),
+			() => createCloudCodeAgentPayload('model', [{ ...user, content: 'x'.repeat(32769) }], tools),
+			() => createCloudCodeAgentPayload('model', [user], [...tools, ...tools]),
+			() => createCloudCodeAgentPayload('model', [user], [{ ...tools[0], parameters: { type: 'object', properties: { tooLarge: 'x'.repeat(32769) } } }]),
+			() => createCloudCodeAgentPayload('model', [user], tools, 8193),
+		]) { assert.throws(execute, /Agent request/); }
 	});
 });

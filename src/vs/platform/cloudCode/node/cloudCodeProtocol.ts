@@ -9,6 +9,8 @@ import { CancellationToken } from '../../../base/common/cancellation.js';
 import { canceled } from '../../../base/common/errors.js';
 import { Disposable, DisposableStore, toDisposable } from '../../../base/common/lifecycle.js';
 import { localize } from '../../../nls.js';
+import { CLOUDCODE_MAX_AGENT_CONTEXT_BYTES, CLOUDCODE_MAX_AGENT_MESSAGES, CLOUDCODE_MAX_MESSAGE_LENGTH, ICloudCodeAgentMessage, ICloudCodeAgentResponse, ICloudCodeToolDefinition } from '../common/cloudCode.js';
+import { ICloudCodeImage, cloudCodeImagesWithinLimit } from '../common/cloudCodeImages.js';
 
 export const CLOUDCODE_REDIRECT_URI = 'http://127.0.0.1:43827/cloudcode/callback';
 
@@ -25,6 +27,100 @@ export interface ICloudCodeAuthConfiguration {
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** Preserve signed provider metadata verbatim after bounding its JSON shape. */
+function validReasoningDetails(value: unknown): value is Record<string, unknown>[] {
+	let nodes = 0;
+	const valid = (item: unknown, depth = 0): boolean => {
+		if (++nodes > 8192 || depth > 16) { return false; }
+		if (item === null || typeof item === 'boolean') { return true; }
+		if (typeof item === 'number') { return Number.isFinite(item); }
+		if (typeof item === 'string') { return item.length <= 65536; }
+		if (Array.isArray(item)) { return item.every(child => valid(child, depth + 1)); }
+		return isRecord(item) && Object.entries(item).every(([key, child]) => key.length <= 256 && valid(child, depth + 1));
+	};
+	return Array.isArray(value) && value.length <= 1024 && value.every(isRecord) && valid(value);
+}
+
+/** Validate the shared-process boundary before serializing model control data. */
+export function createCloudCodeAgentPayload(model: string, messages: readonly ICloudCodeAgentMessage[], tools: readonly ICloudCodeToolDefinition[], maxOutputTokens = 4096) {
+	const invalid = () => new Error(localize('cloudcode.agentRequestInvalid', "This Agent request is invalid or exceeds the CloudCode limit. Start a new chat or use a shorter message."));
+	const namePattern = /^[A-Za-z0-9_-]{1,64}$/;
+	const idPattern = /^[A-Za-z0-9_-]{1,128}$/;
+	if (typeof model !== 'string' || !model || model.length > 200 || !Array.isArray(messages) || !messages.length || messages.length > CLOUDCODE_MAX_AGENT_MESSAGES
+		|| !Array.isArray(tools) || !tools.length || tools.length > 16 || !Number.isInteger(maxOutputTokens) || maxOutputTokens < 1 || maxOutputTokens > 8192) {
+		throw invalid();
+	}
+	let schemaNodes = 0;
+	const validSchema = (value: unknown, depth = 0): boolean => {
+		if (++schemaNodes > 4096 || depth > 16) { return false; }
+		if (value === null || typeof value === 'boolean') { return true; }
+		if (typeof value === 'number') { return Number.isFinite(value); }
+		if (typeof value === 'string') { return value.length <= CLOUDCODE_MAX_MESSAGE_LENGTH; }
+		if (Array.isArray(value)) { return value.every(item => validSchema(item, depth + 1)); }
+		return isRecord(value) && Object.entries(value).every(([key, child]) => key.length <= 256 && validSchema(child, depth + 1));
+	};
+	const names = new Set<string>();
+	const payloadTools = tools.map(tool => {
+		if (!isRecord(tool) || typeof tool.name !== 'string' || !namePattern.test(tool.name) || names.has(tool.name)
+			|| typeof tool.description !== 'string' || tool.description.length > 4096 || !isRecord(tool.parameters) || tool.parameters.type !== 'object' || !validSchema(tool.parameters)) {
+			throw invalid();
+		}
+		names.add(tool.name);
+		return { type: 'function', function: { name: tool.name, description: tool.description, parameters: tool.parameters } };
+	});
+	let bytes = Buffer.byteLength(JSON.stringify(payloadTools), 'utf8');
+	const pending = new Set<string>();
+	const seen = new Set<string>();
+	const images: ICloudCodeImage[] = [];
+	const payloadMessages = messages.map((message, index) => {
+		if (!isRecord(message) || typeof message.role !== 'string' || !['system', 'user', 'assistant', 'tool'].includes(message.role)
+			|| typeof message.content !== 'string' || message.content.length > CLOUDCODE_MAX_MESSAGE_LENGTH
+			|| (message.role === 'system' && index !== 0)
+			|| (message.images !== undefined && (message.role !== 'user' || !Array.isArray(message.images) || !cloudCodeImagesWithinLimit(message.images)))
+			|| (message.toolCalls !== undefined && (message.role !== 'assistant' || !Array.isArray(message.toolCalls) || !message.toolCalls.length || message.toolCalls.length > 8))
+			|| (message.reasoningContent !== undefined && (message.role !== 'assistant' || typeof message.reasoningContent !== 'string' || Buffer.byteLength(message.reasoningContent, 'utf8') > 65536))
+			|| (message.reasoningDetails !== undefined && (message.role !== 'assistant' || !validReasoningDetails(message.reasoningDetails)))
+			|| (message.toolCallId !== undefined && message.role !== 'tool')) {
+			throw invalid();
+		}
+		if (message.role === 'tool') {
+			if (typeof message.toolCallId !== 'string' || !pending.delete(message.toolCallId)) { throw invalid(); }
+		} else if (pending.size) {
+			throw invalid();
+		}
+		const toolCalls = message.toolCalls?.map(call => {
+			if (!isRecord(call) || typeof call.id !== 'string' || !idPattern.test(call.id) || seen.has(call.id)
+				|| typeof call.name !== 'string' || !namePattern.test(call.name) || typeof call.arguments !== 'string' || Buffer.byteLength(call.arguments, 'utf8') > 65536) {
+				throw invalid();
+			}
+			pending.add(call.id);
+			seen.add(call.id);
+			return { id: call.id, type: 'function', function: { name: call.name, arguments: call.arguments } };
+		});
+		const reasoning = {
+			...(message.reasoningContent !== undefined ? { reasoning_content: message.reasoningContent } : {}),
+			...(message.reasoningDetails !== undefined ? { reasoning_details: message.reasoningDetails } : {})
+		};
+		if (Buffer.byteLength(message.reasoningContent ?? '', 'utf8') + (message.reasoningDetails ? Buffer.byteLength(JSON.stringify(message.reasoningDetails), 'utf8') : 0) > 65536) { throw invalid(); }
+		// Image bytes have their own limit; include all remaining wire fields in the text budget.
+		bytes += Buffer.byteLength(JSON.stringify({ role: message.role, content: message.content, tool_calls: toolCalls, tool_call_id: message.toolCallId, ...reasoning }), 'utf8');
+		if (bytes > CLOUDCODE_MAX_AGENT_CONTEXT_BYTES) { throw invalid(); }
+		images.push(...message.images ?? []);
+		return {
+			role: message.role,
+			content: message.images?.length ? [
+				{ type: 'text', text: message.content },
+				...message.images.map(image => ({ type: 'image_url', image_url: { url: image.dataUrl } }))
+			] : message.content,
+			...(toolCalls ? { tool_calls: toolCalls } : {}),
+			...(message.role === 'tool' ? { tool_call_id: message.toolCallId } : {}),
+			...reasoning
+		};
+	});
+	if (pending.size || !cloudCodeImagesWithinLimit(images)) { throw invalid(); }
+	return { model, messages: payloadMessages, tools: payloadTools, tool_choice: 'auto', parallel_tool_calls: false, stream: true, max_tokens: maxOutputTokens, stream_options: { include_usage: true } };
 }
 
 export function parseCloudCodeAuthConfiguration(value: unknown, origin: string): ICloudCodeAuthConfiguration {
@@ -170,7 +266,7 @@ export class CloudCodeEventStream {
 	private outputSize = 0;
 	private done = false;
 
-	constructor(private readonly onText: (text: string) => void) { }
+	constructor(private readonly onText: (text: string) => void, private readonly onValue?: (value: Record<string, unknown>) => void) { }
 
 	accept(bytes: Uint8Array): void {
 		if (this.done) {
@@ -246,6 +342,7 @@ export class CloudCodeEventStream {
 		if (!isRecord(value) || value.error) {
 			throw new Error(localize('cloudcode.streamError', "The inference service could not finish this response. Please try again."));
 		}
+		this.onValue?.(value);
 		if (Array.isArray(value.choices)) {
 			const choice: unknown = value.choices[0];
 			if (isRecord(choice) && isRecord(choice.delta) && typeof choice.delta.content === 'string') {
@@ -255,6 +352,96 @@ export class CloudCodeEventStream {
 				}
 				this.onText(choice.delta.content);
 			}
+		}
+	}
+}
+
+/** Collect native tool-call deltas without ever executing a partial response. */
+export class CloudCodeAgentEventStream {
+	private readonly stream = new CloudCodeEventStream(() => { }, value => this.acceptValue(value));
+	private readonly calls = new Map<number, { id: string; name: string; arguments: string }>();
+	private text = '';
+	private bytes = 0;
+	private finishReason: string | undefined;
+	private reasoningContent: string | undefined;
+	private reasoningDetails: Record<string, unknown>[] | undefined;
+
+	accept(bytes: Uint8Array): void { this.stream.accept(bytes); }
+
+	finish(): ICloudCodeAgentResponse {
+		this.stream.finish();
+		if (!this.finishReason) { throw this.invalid(); }
+		// Truncation is surfaced to the Agent for a bounded retry. Partial arguments are never returned as executable calls.
+		if (this.finishReason === 'length' || this.finishReason === 'content_filter') {
+			return { cancelled: false, text: this.text, toolCalls: [], finishReason: this.finishReason };
+		}
+		const calls = [...this.calls].sort(([left], [right]) => left - right);
+		const ids = new Set<string>();
+		for (let index = 0; index < calls.length; index++) {
+			const [position, call] = calls[index];
+			if (position !== index || !/^[A-Za-z0-9_-]{1,128}$/.test(call.id) || ids.has(call.id) || !/^[A-Za-z0-9_-]{1,64}$/.test(call.name)) { throw this.invalid(); }
+			ids.add(call.id);
+		}
+		if ((this.finishReason === 'tool_calls') !== (calls.length > 0)) { throw this.invalid(); }
+		return {
+			cancelled: false, text: this.text, toolCalls: calls.map(([, call]) => call), finishReason: this.finishReason,
+			...(this.reasoningContent !== undefined ? { reasoningContent: this.reasoningContent } : {}),
+			...(this.reasoningDetails !== undefined ? { reasoningDetails: this.reasoningDetails } : {})
+		};
+	}
+
+	private invalid(): Error {
+		return new Error(localize('cloudcode.invalidStream', "The inference service returned an invalid response."));
+	}
+
+	private count(value: string): string {
+		this.bytes += Buffer.byteLength(value, 'utf8');
+		if (this.bytes > 65536) {
+			throw new Error(localize('cloudcode.responseTooLarge', "The server response exceeded the CloudCode limit."));
+		}
+		return value;
+	}
+
+	private acceptValue(value: Record<string, unknown>): void {
+		if (!Array.isArray(value.choices) || value.choices.length > 1) { throw this.invalid(); }
+		if (!value.choices.length) { return; } // A trailing usage chunk has no choices.
+		const choice: unknown = value.choices[0];
+		if (!isRecord(choice) || (choice.index !== undefined && choice.index !== 0) || !isRecord(choice.delta) || this.finishReason) { throw this.invalid(); }
+		const delta = choice.delta;
+		if ((delta.role !== undefined && delta.role !== 'assistant') || delta.function_call !== undefined
+			|| (delta.content !== undefined && delta.content !== null && typeof delta.content !== 'string')
+			|| (delta.reasoning_content !== undefined && delta.reasoning_content !== null && typeof delta.reasoning_content !== 'string')
+			|| (delta.reasoning !== undefined && delta.reasoning !== null && typeof delta.reasoning !== 'string')) { throw this.invalid(); }
+		if (typeof delta.content === 'string') { this.text += this.count(delta.content); }
+		const reasoning = delta.reasoning_content ?? delta.reasoning;
+		if (typeof reasoning === 'string') { this.reasoningContent = (this.reasoningContent ?? '') + this.count(reasoning); }
+		if (delta.reasoning_details !== undefined && delta.reasoning_details !== null) {
+			if (!validReasoningDetails(delta.reasoning_details)) { throw this.invalid(); }
+			this.count(JSON.stringify(delta.reasoning_details));
+			this.reasoningDetails ??= [];
+			this.reasoningDetails.push(...delta.reasoning_details);
+			if (!validReasoningDetails(this.reasoningDetails)) { throw this.invalid(); }
+		}
+		if (delta.tool_calls !== undefined) {
+			if (!Array.isArray(delta.tool_calls) || delta.tool_calls.length > 8) { throw this.invalid(); }
+			for (const part of delta.tool_calls) {
+				if (!isRecord(part) || typeof part.index !== 'number' || !Number.isInteger(part.index) || part.index < 0 || part.index >= 8
+					|| (part.type !== undefined && part.type !== 'function') || (part.id !== undefined && typeof part.id !== 'string')
+					|| (part.function !== undefined && !isRecord(part.function))) { throw this.invalid(); }
+				const call = this.calls.get(part.index) ?? { id: '', name: '', arguments: '' };
+				if (typeof part.id === 'string') { call.id += this.count(part.id); }
+				if (isRecord(part.function)) {
+					if ((part.function.name !== undefined && typeof part.function.name !== 'string') || (part.function.arguments !== undefined && typeof part.function.arguments !== 'string')) { throw this.invalid(); }
+					if (typeof part.function.name === 'string') { call.name += this.count(part.function.name); }
+					if (typeof part.function.arguments === 'string') { call.arguments += this.count(part.function.arguments); }
+				}
+				if (call.id.length > 128 || call.name.length > 64) { throw this.invalid(); }
+				this.calls.set(part.index, call);
+			}
+		}
+		if (choice.finish_reason !== undefined && choice.finish_reason !== null) {
+			if (typeof choice.finish_reason !== 'string' || !['stop', 'tool_calls', 'length', 'content_filter'].includes(choice.finish_reason)) { throw this.invalid(); }
+			this.finishReason = choice.finish_reason;
 		}
 	}
 }

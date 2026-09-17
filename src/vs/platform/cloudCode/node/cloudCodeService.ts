@@ -21,8 +21,8 @@ import { ILogService } from '../../log/common/log.js';
 import { IProductService } from '../../product/common/productService.js';
 import { ICloudCodeAgentDiagnostic } from '../common/cloudCodeDiagnostics.js';
 import { CloudCodeDiagnostics } from './cloudCodeDiagnostics.js';
-import { CLOUDCODE_DEFAULT_SERVER, CLOUDCODE_MAX_CONTEXT_BYTES, CLOUDCODE_MAX_MESSAGES, CLOUDCODE_MAX_MESSAGE_LENGTH, CLOUDCODE_SERVER_SETTING, ICloudCodeAccount, ICloudCodeChatDelta, ICloudCodeMessage, ICloudCodeModel, ICloudCodeService, ICloudCodeState } from '../common/cloudCode.js';
-import { CLOUDCODE_REDIRECT_URI, CloudCodeEventStream, CloudCodeLoopback, cloudCodeOrigin, createCloudCodeAuthorization, isRecord, parseCloudCodeAuthConfiguration } from './cloudCodeProtocol.js';
+import { CLOUDCODE_DEFAULT_SERVER, CLOUDCODE_MAX_CONTEXT_BYTES, CLOUDCODE_MAX_MESSAGES, CLOUDCODE_MAX_MESSAGE_LENGTH, CLOUDCODE_SERVER_SETTING, ICloudCodeAccount, ICloudCodeAgentMessage, ICloudCodeAgentResponse, ICloudCodeChatDelta, ICloudCodeMessage, ICloudCodeModel, ICloudCodeService, ICloudCodeState, ICloudCodeToolDefinition } from '../common/cloudCode.js';
+import { CLOUDCODE_REDIRECT_URI, CloudCodeAgentEventStream, CloudCodeEventStream, CloudCodeLoopback, cloudCodeOrigin, createCloudCodeAgentPayload, createCloudCodeAuthorization, isRecord, parseCloudCodeAuthConfiguration } from './cloudCodeProtocol.js';
 
 interface IStoredTokens {
 	readonly accessToken: string;
@@ -333,6 +333,41 @@ export class CloudCodeService extends Disposable implements ICloudCodeService {
 
 	async cancelChat(requestId: string): Promise<void> {
 		this.requests.get(requestId)?.cancel();
+	}
+
+	async streamAgent(requestId: string, model: string, messages: readonly ICloudCodeAgentMessage[], tools: readonly ICloudCodeToolDefinition[], maxOutputTokens?: number): Promise<ICloudCodeAgentResponse> {
+		if (typeof requestId !== 'string' || !requestId || requestId.length > 128 || this.requests.has(requestId) || this.signingOut) {
+			throw new Error(localize('cloudcode.requestBusy', "Wait for the current operation to finish."));
+		}
+		const payload = createCloudCodeAgentPayload(model, messages, tools, maxOutputTokens);
+		const source = new CancellationTokenSource(this.lifetime.token);
+		this.requests.set(requestId, source);
+		let timedOut = false;
+		const timer = setTimeout(() => { timedOut = true; source.cancel(); }, 5 * 60 * 1000);
+		try {
+			await raceCancellationError(this.initialize(), source.token);
+			const context = await this.authorizedRequest('/chat/completions', 'POST', payload, source.token);
+			const contentType = context.res.headers['content-type'];
+			if (typeof contentType !== 'string' || !contentType.toLowerCase().startsWith('text/event-stream')) {
+				context.stream.destroy();
+				throw new Error(localize('cloudcode.invalidStream', "The inference service returned an invalid response."));
+			}
+			const stream = new CloudCodeAgentEventStream();
+			await this.readStream(context, data => stream.accept(data.buffer), source.token);
+			return stream.finish();
+		} catch (error) {
+			if (timedOut) {
+				throw new Error(localize('cloudcode.chatTimeout', "The response timed out. Please try again."));
+			}
+			if (source.token.isCancellationRequested || isCancellationError(error)) {
+				return { cancelled: true, text: '', toolCalls: [] };
+			}
+			throw error;
+		} finally {
+			clearTimeout(timer);
+			source.dispose();
+			this.requests.delete(requestId);
+		}
 	}
 
 	private initialize(): Promise<void> {

@@ -113,6 +113,7 @@ function isConversation(value: unknown): value is ICloudCodeConversation {
 	if (!Array.isArray(value.messages) || value.messages.length > 512 || !value.messages.every(message => isObject(message)
 		&& ['user', 'assistant'].includes(message.role as string) && typeof message.text === 'string' && message.text.length <= 2097152
 		&& (message.incomplete === undefined || typeof message.incomplete === 'boolean') && message.progress === undefined
+		&& (message.proposedEdits === undefined || message.role === 'assistant' && typeof message.proposedEdits === 'boolean')
 		&& (message.activity === undefined || Array.isArray(message.activity) && message.activity.length <= 100 && message.activity.every(item => typeof item === 'string' && item.length <= 4096))
 		&& (message.attachments === undefined || Array.isArray(message.attachments) && message.attachments.length <= 5 && message.attachments.every(isAttachment)))) {
 		return false;

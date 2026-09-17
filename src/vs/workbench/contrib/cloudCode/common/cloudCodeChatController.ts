@@ -405,6 +405,7 @@ export class CloudCodeChatController extends Disposable {
 				: localize('cloudcode.messageTooLong', "This message is too long. Shorten it before sending."));
 			return;
 		}
+		const history = this.agentHistory();
 		this.clearEditProposals();
 		const disposables = new DisposableStore();
 		const request = { source: disposables.add(new CancellationTokenSource()), completion: Promise.resolve(), conversation: this.agentConversation, activity: [] as string[] };
@@ -413,8 +414,6 @@ export class CloudCodeChatController extends Disposable {
 		const responseIndex = this.messages.length + 1;
 		this.messages.push({ role: 'user', text: prompt, attachments }, { role: 'assistant', text: '', progress: localize('cloudcode.agentStarting', "Exploring your project…") });
 		this.attachments = [];
-		this.history = [];
-		this.historyHasAttachments = false;
 		this.view.setAttachments([], false);
 		this.view.setDraft('');
 		this.view.setError(undefined);
@@ -431,7 +430,7 @@ export class CloudCodeChatController extends Disposable {
 					request.activity.push(message);
 					this.messages[responseIndex] = { role: 'assistant', text: '', progress: message, activity: [...request.activity] };
 					this.view.setMessages(this.messages);
-				});
+				}, history);
 				if (!isCurrent()) {
 					return;
 				}
@@ -439,11 +438,9 @@ export class CloudCodeChatController extends Disposable {
 					throw new CancellationError();
 				}
 				this.editProposals = result.edits.map(edit => ({ ...edit, id: generateUuid(), status: 'pending', reviewed: false }));
-				this.messages[responseIndex] = { role: 'assistant', text: result.text, attachments: result.attachments, activity: [...request.activity] };
-				if (!result.edits.length) {
-					this.history = [cloudCodeUserMessage(formatCloudCodePrompt(prompt, result.attachments), result.attachments), { role: 'assistant', content: result.text }];
-					this.historyHasAttachments = result.attachments.length > 0;
-				}
+				this.messages[responseIndex] = { role: 'assistant', text: result.text, attachments: result.attachments, activity: [...request.activity], ...(result.edits.length ? { proposedEdits: true } : {}) };
+				this.history = this.agentHistory();
+				this.historyHasAttachments = false;
 				this.view.setEditProposals(this.editProposals, false);
 				this.view.setMessages(this.messages);
 			} catch (error) {
@@ -475,6 +472,39 @@ export class CloudCodeChatController extends Disposable {
 		})();
 	}
 
+	/** Only completed discussion is reusable; attachment snapshots and tool authority are task-local. */
+	private agentHistory(): ICloudCodeMessage[] {
+		const history: ICloudCodeMessage[] = [];
+		let user: string | undefined;
+		for (const message of this.messages) {
+			if (message.incomplete || message.progress !== undefined) {
+				user = undefined;
+				continue;
+			}
+			let content = message.text;
+			const labels = message.attachments?.map(attachment => attachment.label);
+			if (labels?.length) {
+				content += `\n\nPreviously referenced files (read again for current contents): ${JSON.stringify(labels)}`;
+			}
+			if (message.role === 'user') {
+				user = content;
+				continue;
+			}
+			if (message.proposedEdits) {
+				content = `Proposal only; no edits were applied by this response. Later review outcomes are recorded separately.\n${content}`;
+			}
+			if (user !== undefined) {
+				history.push({ role: 'user', content: user }, { role: 'assistant', content });
+				user = undefined;
+			} else if (history.length) {
+				// Review and archive notices belong to the preceding completed turn.
+				const previous = history[history.length - 1];
+				history[history.length - 1] = { role: 'assistant', content: `${previous.content}\n\n${content}` };
+			}
+		}
+		return history.slice(-CLOUDCODE_MAX_MESSAGES);
+	}
+
 	private finishResponse(incomplete: boolean): void {
 		const request = this.activeRequest;
 		if (!request) {
@@ -499,7 +529,7 @@ export class CloudCodeChatController extends Disposable {
 			}
 			this.view.setEditProposals(this.editProposals, false);
 		}
-		this.messages[this.messages.length - 1] = { role: 'assistant', text: responseText, incomplete };
+		this.messages[this.messages.length - 1] = { role: 'assistant', text: responseText, incomplete, ...(request.targets && this.editProposals.length ? { proposedEdits: true } : {}) };
 		if (!incomplete && !request.targets) {
 			this.historyHasAttachments ||= request.hasAttachments;
 			this.history.push(request.message, { role: 'assistant', content: request.text });
@@ -549,17 +579,17 @@ export class CloudCodeChatController extends Disposable {
 				reviewed: proposal.reviewed || action === 'preview',
 				error: undefined
 			});
-			if (action === 'accept') {
-				// Earlier source snapshots no longer describe the accepted editor contents.
-				this.history = [];
+			if (action !== 'preview') {
+				this.messages.push({ role: 'assistant', text: action === 'accept'
+					? localize('cloudcode.editAcceptedFile', "Applied the proposed change to {0} in the editor. It can be undone with Undo. Read the file again before making further changes.", proposal.target.attachment.label)
+					: localize('cloudcode.editRejectedFile', "Rejected the proposed change to {0}. This proposal was not applied.", proposal.target.attachment.label) });
+				// Retain the discussion and review outcome without replaying stale source snapshots.
+				this.history = this.agentHistory();
 				this.historyHasAttachments = false;
+				this.view.setMessages(this.messages);
 			}
 			if (!this.hasPendingEdits()) {
 				this.editProvider.clear();
-				if (this.editProposals.some(candidate => candidate.status === 'accepted')) {
-					this.messages.push({ role: 'assistant', text: localize('cloudcode.editsAccepted', "Changes are in the editor and can be undone with Undo. The next request starts fresh; attach the updated code for further changes.") });
-					this.view.setMessages(this.messages);
-				}
 			}
 		} catch (error) {
 			if (!this.disposed && revision === this.editRevision) {

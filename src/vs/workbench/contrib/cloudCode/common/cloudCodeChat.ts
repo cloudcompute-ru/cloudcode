@@ -14,6 +14,8 @@ export interface ICloudCodeChatMessage {
 	/** Current activity while waiting for an answer; never part of the model response. */
 	readonly progress?: string;
 	readonly incomplete?: boolean;
+	/** Marks an answer as a proposal; applying it requires a separate recorded review outcome. */
+	readonly proposedEdits?: boolean;
 	readonly attachments?: readonly ICloudCodeAttachment[];
 	readonly activity?: readonly string[];
 }
