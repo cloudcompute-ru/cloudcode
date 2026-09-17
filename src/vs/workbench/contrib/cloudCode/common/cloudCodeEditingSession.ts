@@ -52,6 +52,8 @@ export interface ICloudCodeEditingWorkspace extends IDisposable {
 export interface ICloudCodeEditingSessionView {
 	readonly id: string;
 	readonly title?: string;
+	/** Already applied to the project before a command, rather than awaiting final review. */
+	readonly checkpoint?: boolean;
 	readonly status: CloudCodeEditingSessionStatus;
 	readonly reviewed: boolean;
 	readonly changes: readonly { readonly kind: ICloudCodeSessionChange['kind']; readonly path: string; readonly newPath?: string }[];

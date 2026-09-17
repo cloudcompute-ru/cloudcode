@@ -32,11 +32,11 @@ suite('CloudCode diagnostics', () => {
 		assert.deepStrictEqual([
 			sanitizeCloudCodeAgentDiagnostic({ ...diagnostic, prompt: 'secret', error: new Error('private path') }),
 			sanitizeCloudCodeAgentDiagnostic({ ...diagnostic, turn: NaN }),
-			sanitizeCloudCodeAgentDiagnostic({ ...diagnostic, turn: 24 }),
-			sanitizeCloudCodeAgentDiagnostic({ ...diagnostic, turn: 25 }),
+			sanitizeCloudCodeAgentDiagnostic({ ...diagnostic, stage: 'command', turn: 40, command: 'private command', stdout: 'private output' }),
+			sanitizeCloudCodeAgentDiagnostic({ ...diagnostic, turn: 41 }),
 			sanitizeCloudCodeAgentDiagnostic({ ...diagnostic, code: 'arbitrary secret' }),
 			sanitizeCloudCodeAgentDiagnostic({ ...diagnostic, model: 'user@example.com', requestId: '/private/file' })
-		], [diagnostic, undefined, { ...diagnostic, turn: 24 }, undefined, undefined, { ...diagnostic, model: 'unknown', requestId: undefined }]);
+		], [diagnostic, undefined, { ...diagnostic, stage: 'command', turn: 40 }, undefined, undefined, { ...diagnostic, model: 'unknown', requestId: undefined }]);
 	});
 
 	test('removes SDK and scope-added private data before transport', () => {

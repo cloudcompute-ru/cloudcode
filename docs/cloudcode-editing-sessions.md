@@ -2,6 +2,8 @@
 
 Agent mode can patch, create, rename and delete text files across one task. Changes stay in a local overlay while the Agent works. Later reads see staged contents, so the Agent can revise its own edits without changing the user's files. Repeated changes collapse into one original-to-final diff per file.
 
+[PR3 execution tasks](cloudcode-agent-execution.md) extend this flow with approved, saved checkpoints before commands. Applied checkpoints remain on disk after cancellation; the discard behavior below refers to changes that are still staged.
+
 ## Review and recovery
 
 The finished task shows a file list with **Preview Changes**, **Accept All** and **Reject All**. Preview opens the native multi-file diff. Accept is enabled after the preview opens successfully. Reject discards the overlay. Cancellation or a failed Agent run also discards staged changes.

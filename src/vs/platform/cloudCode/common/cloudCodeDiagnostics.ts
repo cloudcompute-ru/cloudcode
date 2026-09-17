@@ -7,7 +7,7 @@ export const CLOUDCODE_ERROR_REPORTING_SETTING = 'cloudcode.errorReporting.enabl
 
 export const cloudCodeAgentErrorCodes = ['invalid_json', 'invalid_envelope', 'invalid_root', 'invalid_tool', 'invalid_path', 'invalid_range', 'invalid_result', 'response_too_large', 'response_truncated', 'call_limit', 'timeout', 'operation_failed'] as const;
 export type CloudCodeAgentErrorCode = typeof cloudCodeAgentErrorCodes[number];
-export const cloudCodeAgentStages = ['workspace', 'context', 'inference', 'parse', 'tool', 'edits'] as const;
+export const cloudCodeAgentStages = ['workspace', 'context', 'inference', 'parse', 'tool', 'edits', 'command'] as const;
 export type CloudCodeAgentStage = typeof cloudCodeAgentStages[number];
 
 /** Only structural metadata crosses the diagnostics boundary. Never include error messages or model output. */
@@ -29,7 +29,7 @@ export function sanitizeCloudCodeAgentDiagnostic(value: unknown): ICloudCodeAgen
 	const input = value as Record<string, unknown>;
 	const code = cloudCodeAgentErrorCodes.find(code => code === input.code);
 	const stage = cloudCodeAgentStages.find(stage => stage === input.stage);
-	if (!code || !stage || typeof input.turn !== 'number' || !Number.isSafeInteger(input.turn) || input.turn < 0 || input.turn > 24
+	if (!code || !stage || typeof input.turn !== 'number' || !Number.isSafeInteger(input.turn) || input.turn < 0 || input.turn > 40
 		|| typeof input.rootCount !== 'number' || !Number.isSafeInteger(input.rootCount) || input.rootCount < 0 || input.rootCount > 10000
 		|| typeof input.responseLength !== 'number' || !Number.isSafeInteger(input.responseLength) || input.responseLength < 0 || input.responseLength > 65536) {
 		return undefined;

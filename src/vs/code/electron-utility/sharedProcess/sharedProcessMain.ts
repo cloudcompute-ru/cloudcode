@@ -50,6 +50,8 @@ import { IProductService } from '../../../platform/product/common/productService
 import { IRequestService } from '../../../platform/request/common/request.js';
 import { CLOUDCODE_CHANNEL } from '../../../platform/cloudCode/common/cloudCode.js';
 import { CloudCodeService } from '../../../platform/cloudCode/node/cloudCodeService.js';
+import { CLOUDCODE_COMMAND_CHANNEL } from '../../../platform/cloudCode/common/cloudCodeCommand.js';
+import { CloudCodeCommandService } from '../../../platform/cloudCode/node/cloudCodeCommandService.js';
 import { IEncryptionService } from '../../../platform/encryption/common/encryptionService.js';
 import { BaseSecretStorageService, ISecretStorageService } from '../../../platform/secrets/common/secrets.js';
 import { ISharedProcessConfiguration } from '../../../platform/sharedProcess/node/sharedProcess.js';
@@ -499,6 +501,8 @@ class SharedProcessMain extends Disposable implements IClientConnectionFilter {
 		// CloudCode
 		const cloudCodeService = this._register(accessor.get(IInstantiationService).createInstance(CloudCodeService));
 		this.server.registerChannel(CLOUDCODE_CHANNEL, ProxyChannel.fromService(cloudCodeService, this._store));
+		const cloudCodeCommandService = this._register(accessor.get(IInstantiationService).createInstance(CloudCodeCommandService));
+		this.server.registerChannel(CLOUDCODE_COMMAND_CHANNEL, ProxyChannel.fromService(cloudCodeCommandService, this._store));
 
 		// Tunnel
 		const sharedProcessTunnelChannel = ProxyChannel.fromService(accessor.get(ISharedProcessTunnelService), this._store);
