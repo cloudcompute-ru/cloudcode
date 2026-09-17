@@ -555,7 +555,7 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 			for (const attachment of message.attachments ?? []) {
 				this.renderAttachment(row, attachment);
 			}
-			if (message.activity?.length) {
+			if (message.activity && message.activity.length > 1) {
 				const activity = dom.append(row, dom.$<HTMLDetailsElement>('details.cloudcode-chat-attachment-preview'));
 				dom.append(activity, dom.$('summary')).textContent = localize('cloudcode.agentActivity', "Agent Activity");
 				dom.append(activity, dom.$('pre')).textContent = message.activity.join('\n');
