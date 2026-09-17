@@ -23,10 +23,18 @@ import { ViewPaneContainer } from '../../../browser/parts/views/viewPaneContaine
 import { Extensions, IViewContainersRegistry, IViewsRegistry, ViewContainerLocation } from '../../../common/views.js';
 import { CloudCodeChatViewPane } from './cloudCodeChatViewPane.js';
 import { CLOUDCODE_ERROR_REPORTING_SETTING } from '../../../../platform/cloudCode/common/cloudCodeDiagnostics.js';
+import { Extensions as OutputExtensions, IOutputChannelRegistry } from '../../../services/output/common/output.js';
+import { CLOUDCODE_COMMAND_OUTPUT_CHANNEL } from '../common/cloudCodeAgentExecution.js';
 
 const containerId = 'workbench.view.cloudCodeChat';
 const title = localize2('cloudCode.chat.title', "CloudCode Chat");
 const icon = registerIcon('cloudcode-chat-view-icon', Codicon.commentDiscussion, localize('cloudCode.chat.icon', "View icon of CloudCode Chat."));
+
+Registry.as<IOutputChannelRegistry>(OutputExtensions.OutputChannels).registerChannel({
+	id: CLOUDCODE_COMMAND_OUTPUT_CHANNEL,
+	label: localize('cloudCode.commandOutput', "CloudCode Agent Commands"),
+	log: false,
+});
 
 Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
 	id: 'cloudcode',

@@ -119,6 +119,9 @@ jobs:
       - name: Type Check Desktop Sources
         run: npm run typecheck-client
 
+      - name: Test Agent Command Lifecycle on Windows
+        run: node build/cloudcode/test-agent-command.ts
+
       - name: Build Windows Application
         env:
           GITHUB_TOKEN: ${{ github.token }}

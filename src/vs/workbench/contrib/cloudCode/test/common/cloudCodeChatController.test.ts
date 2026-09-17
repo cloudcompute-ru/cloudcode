@@ -1031,6 +1031,79 @@ suite('CloudCodeChatController', () => {
 		await settleEdits();
 	}
 
+	test('command checkpoints remain applied when final pending changes are rejected', async () => {
+		view.changeMode.fire('agent');
+		view.submit.fire('Implement and test');
+		const checkpoint = disposables.add(new TestEditingSession('checkpoint'));
+		checkpoint.status = 'applied';
+		checkpoint.reviewed = true;
+		const pending = disposables.add(new TestEditingSession('final'));
+		await agent.requests[0].result.complete({ text: 'Checks passed before the final adjustment.', attachments: [], edits: [], checkpoints: [checkpoint], commandCount: 1, editingSession: pending });
+		await settleEdits();
+		await reviewSession(pending, 'reject');
+		assert.deepStrictEqual({ sessions: view.editingSessions.map(session => ({ id: session.id, status: session.status, checkpoint: session.checkpoint })), appliedHistory: view.messages.some(message => message.text.startsWith('Applied the task changes:')), reverted: checkpoint.undoCount }, {
+			sessions: [{ id: 'checkpoint', status: 'applied', checkpoint: true }, { id: 'final', status: 'rejected', checkpoint: false }], appliedHistory: true, reverted: 0
+		});
+		await reviewSession(checkpoint, 'undo');
+		assert.strictEqual(checkpoint.undoCount, 1);
+	});
+
+	test('stopping a command task keeps applied checkpoints and discards its latest overlay', async () => {
+		view.changeMode.fire('agent');
+		view.submit.fire('Implement and test');
+		view.stop.fire();
+		const checkpoint = disposables.add(new TestEditingSession('checkpoint'));
+		checkpoint.status = 'applied';
+		const pending = disposables.add(new TestEditingSession('late-pending'));
+		await agent.requests[0].result.complete({ text: 'A late answer.', attachments: [], edits: [], checkpoints: [checkpoint], editingSession: pending, commandCount: 1 });
+		await settleEdits();
+		assert.deepStrictEqual({ checkpointDisposed: checkpoint.disposed, pendingDisposed: pending.disposed, retained: view.editingSessions.map(session => session.id), stopped: view.messages[1].incomplete, remaining: view.messages[1].text.includes('command side effects remain'), falseUnchanged: view.messages.some(message => message.text.includes('No changes were applied')) }, {
+			checkpointDisposed: false, pendingDisposed: true, retained: ['checkpoint'], stopped: true, remaining: true, falseUnchanged: false
+		});
+	});
+
+	test('an incomplete execution result retains recovery and shows its error without claiming rollback', async () => {
+		view.changeMode.fire('agent');
+		view.submit.fire('Implement and test');
+		const checkpoint = disposables.add(new TestEditingSession('checkpoint'));
+		checkpoint.status = 'partial';
+		await agent.requests[0].result.complete({ text: 'Task stopped after a partially applied checkpoint.', attachments: [], edits: [], checkpoints: [checkpoint], commandCount: 1, incomplete: true, error: 'Check the affected files before continuing.' });
+		await settleEdits();
+		assert.deepStrictEqual({ status: view.editingSessions[0].status, checkpoint: view.editingSessions[0].checkpoint, incomplete: view.messages[1].incomplete, error: view.error }, {
+			status: 'partial', checkpoint: true, incomplete: true, error: 'Check the affected files before continuing.'
+		});
+	});
+
+	test('stopping command-only work does not claim the command left files unchanged', async () => {
+		view.changeMode.fire('agent');
+		view.submit.fire('Run the tests');
+		view.stop.fire();
+		await agent.requests[0].result.complete({ text: 'Stopped.', attachments: [], edits: [], commandCount: 1, incomplete: true });
+		await settleEdits();
+		assert.deepStrictEqual({ incomplete: view.messages[1].incomplete, remaining: view.messages[1].text.includes('command side effects remain'), sessions: view.editingSessions }, { incomplete: true, remaining: true, sessions: [] });
+	});
+
+	test('a command cleanup failure remains visible after the user presses Stop', async () => {
+		view.changeMode.fire('agent');
+		view.submit.fire('Run the tests');
+		view.stop.fire();
+		const explanation = 'CloudCode could not confirm that all command processes stopped. Check running processes before retrying.';
+		await agent.requests[0].result.complete({ text: explanation, attachments: [], edits: [], commandCount: 1, incomplete: true, error: explanation });
+		await settleEdits();
+		assert.deepStrictEqual({ text: view.messages[1].text, incomplete: view.messages[1].incomplete, error: view.error }, { text: explanation, incomplete: true, error: explanation });
+	});
+
+	test('late command checkpoints cannot attach capabilities to a different chat', async () => {
+		view.changeMode.fire('agent');
+		view.submit.fire('Implement and test');
+		view.newConversation.fire();
+		const checkpoint = disposables.add(new TestEditingSession('checkpoint'));
+		checkpoint.status = 'applied';
+		await agent.requests[0].result.complete({ text: 'Old checkpoint.', attachments: [], edits: [], checkpoints: [checkpoint], commandCount: 1, incomplete: true });
+		await settleEdits();
+		assert.deepStrictEqual({ disposed: checkpoint.disposed, sessions: view.editingSessions, messages: view.messages }, { disposed: true, sessions: [], messages: [] });
+	});
+
 	test('task review requires a completed preview, blocks pending followups and ignores repeated clicks', async () => {
 		const session = await prepareEditingSession();
 		await reviewSession(session, 'accept');

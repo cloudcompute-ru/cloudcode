@@ -198,6 +198,15 @@ suite('CloudCodeChatWidget thinking state', () => {
 		assert.strictEqual(widget.domNode.querySelectorAll('[data-session-action]').length, 0);
 	});
 
+	test('command checkpoints distinguish applied changes from pending review and limit the undo claim', () => {
+		widget.setEditingSessions([{ ...task, checkpoint: true, status: 'applied', reviewed: true }], false);
+		assert.deepStrictEqual({ label: taskButton('undo').textContent, hint: widget.domNode.querySelector('.cloudcode-chat-editing-session .cloudcode-chat-hint')?.textContent, accept: widget.domNode.querySelector('[data-session-action="accept"]') }, {
+			label: 'Undo Checkpoint', hint: 'Applied before running a command. Undo Checkpoint covers these file edits only; command side effects remain. Later changes may prevent undo.', accept: null
+		});
+		widget.setEditingSessions([{ ...task, checkpoint: true, status: 'partial' }], false);
+		assert.ok(widget.domNode.querySelector('.cloudcode-chat-editing-session .cloudcode-chat-hint')?.textContent?.includes('only partly applied'));
+	});
+
 	test('dropping HTML inserts only its plain text', () => {
 		widget.setDraft('');
 		const data = new DataTransfer();

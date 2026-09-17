@@ -434,7 +434,11 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 				dom.append(file, dom.$('span.cloudcode-chat-task-path')).textContent = change.newPath ? `${change.path} → ${change.newPath}` : change.path;
 			}
 			const hint = dom.append(row, dom.$('p.cloudcode-chat-hint', { role: 'status' }));
-			hint.textContent = session.status === 'pending'
+			hint.textContent = session.checkpoint && (session.status === 'applied' || session.status === 'partial')
+				? session.status === 'partial'
+					? localize('cloudcode.checkpointPartialHint', "This checkpoint was only partly applied. Undo Checkpoint covers these file edits only; command side effects remain. Later changes may prevent undo.")
+					: localize('cloudcode.checkpointAppliedHint', "Applied before running a command. Undo Checkpoint covers these file edits only; command side effects remain. Later changes may prevent undo.")
+				: session.status === 'pending'
 				? localize('cloudcode.taskReviewHint', "Preview the combined diff, then accept or reject all changes before continuing.")
 				: session.status === 'partial' ? localize('cloudcode.taskPartialHint', "Some changes were applied. You can undo this task or continue from the current files.")
 					: session.status === 'applied' ? localize('cloudcode.taskAppliedHint', "Applied. Undo Task restores this task while preserving your later edits when possible.")
@@ -448,7 +452,7 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 				this.createEditingSessionButton(actions, session, 'accept', localize('cloudcode.acceptTask', "Accept All"), !session.reviewed);
 				this.createEditingSessionButton(actions, session, 'reject', localize('cloudcode.rejectTask', "Reject All"), true);
 			} else if (session.status === 'applied' || session.status === 'partial') {
-				this.createEditingSessionButton(actions, session, 'undo', localize('cloudcode.undoTask', "Undo Task"), true);
+				this.createEditingSessionButton(actions, session, 'undo', session.checkpoint ? localize('cloudcode.undoCheckpoint', "Undo Checkpoint") : localize('cloudcode.undoTask', "Undo Task"), true);
 			}
 		}
 		this.updateControls();

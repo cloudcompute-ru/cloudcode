@@ -13,10 +13,11 @@ import { Disposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { CLOUDCODE_MAX_CONTEXT_BYTES, CLOUDCODE_MAX_MESSAGE_LENGTH, ICloudCodeAgentMessage, ICloudCodeAgentResponse, ICloudCodeChatDelta, ICloudCodeMessage, ICloudCodeService, ICloudCodeToolDefinition } from '../../../../../platform/cloudCode/common/cloudCode.js';
 import { ICloudCodeAgentDiagnostic } from '../../../../../platform/cloudCode/common/cloudCodeDiagnostics.js';
+import { CloudCodeAgentCommandResult, CloudCodeAgentExecutionError, ICloudCodeAgentCommand, ICloudCodeAgentExecutionFactory } from '../../common/cloudCodeAgentExecution.js';
 import { CloudCodeAgent, CloudCodeAgentToolCall, ICloudCodeAgentToolResult, ICloudCodeAgentWorkspaceSession } from '../../common/cloudCodeAgent.js';
 import { ICloudCodeAttachment } from '../../common/cloudCodeChatContext.js';
 import { ICloudCodeEditProvider, ICloudCodeEditTarget } from '../../common/cloudCodeEdits.js';
-import { CloudCodeEditingReadOnlyError, CloudCodeEditingSession, ICloudCodeEditingSessionFactory, ICloudCodeEditingWorkspace, ICloudCodeSessionFile } from '../../common/cloudCodeEditingSession.js';
+import { CloudCodeEditingReadOnlyError, CloudCodeEditingSession, ICloudCodeEditingSession, ICloudCodeEditingSessionFactory, ICloudCodeEditingWorkspace, ICloudCodeSessionFile } from '../../common/cloudCodeEditingSession.js';
 
 class TestService extends Disposable implements ICloudCodeService {
 	declare readonly _serviceBrand: undefined;
@@ -90,7 +91,7 @@ class TestEdits implements ICloudCodeEditProvider {
 }
 
 class TestEditingWorkspace implements ICloudCodeEditingWorkspace {
-	readonly files = new Map<string, string>();
+	constructor(readonly files = new Map<string, string>()) { }
 	readonly reads: string[] = [];
 	disposed = false;
 	assertValid(): void { if (this.disposed) { throw new Error('Disposed workspace'); } }
@@ -115,12 +116,12 @@ suite('CloudCodeAgent', () => {
 		return { id: 'private-id-' + name + (range?.startLineNumber ?? ''), resource: 'file:///private/project/' + name, label: name, content, languageId: 'typescript', range };
 	}
 
-	function setup(responses: readonly ICloudCodeAgentResponse[] = [], editingFactory?: ICloudCodeEditingSessionFactory) {
+	function setup(responses: readonly ICloudCodeAgentResponse[] = [], editingFactory?: ICloudCodeEditingSessionFactory, executionFactory?: ICloudCodeAgentExecutionFactory) {
 		const service = disposables.add(new TestService());
 		service.responses = [...responses];
 		const session = new TestSession();
 		const edits = new TestEdits();
-		const agent = new CloudCodeAgent(service, { createSession: () => session }, edits, editingFactory);
+		const agent = new CloudCodeAgent(service, { createSession: () => session }, edits, editingFactory, executionFactory);
 		const progress: string[] = [];
 		const run = (attachments: readonly ICloudCodeAttachment[] = [], token = CancellationToken.None, prompt = 'Find and fix the bug', history: readonly ICloudCodeMessage[] = []) => agent.run(prompt, attachments, 'model-1', token, message => progress.push(message), history);
 		return { service, session, edits, agent, progress, run };
@@ -133,9 +134,233 @@ suite('CloudCodeAgent', () => {
 		return { ...setup(responses, { createSession: () => editingSession }), editingSession, editingWorkspace: workspace };
 	}
 
+	function setupExecution(responses: readonly ICloudCodeAgentResponse[] = [], initialFiles: Readonly<Record<string, string>> = {}) {
+		const files = new Map(Object.entries(initialFiles));
+		const sessions: CloudCodeEditingSession[] = [];
+		const workspaces: TestEditingWorkspace[] = [];
+		const execution = {
+			disposed: false,
+			calls: [] as ICloudCodeAgentCommand[],
+			onRun: async (_command: ICloudCodeAgentCommand, session: ICloudCodeEditingSession, _token: CancellationToken): Promise<CloudCodeAgentCommandResult> => {
+				if (session.changes.length) { await session.preview(); await session.apply(); }
+				return { exitCode: 0, stdout: 'Tests passed', stderr: '', timedOut: false, cancelled: false, truncated: false };
+			},
+			async run(command: ICloudCodeAgentCommand, session: ICloudCodeEditingSession, token: CancellationToken) {
+				this.calls.push(command);
+				return this.onRun(command, session, token);
+			},
+			dispose() { this.disposed = true; }
+		};
+		const factory: ICloudCodeEditingSessionFactory = { createSession: () => {
+			const workspace = new TestEditingWorkspace(files);
+			const session = disposables.add(new CloudCodeEditingSession(workspace));
+			workspace.preview = async () => { };
+			workspace.apply = async () => {
+				for (const change of session.changes) {
+					files.delete(change.before.path);
+					if (change.after.content !== undefined) { files.set(change.after.path, change.after.content); }
+				}
+				return true;
+			};
+			sessions.push(session);
+			workspaces.push(workspace);
+			return session;
+		} };
+		return { ...setup(responses, factory, { shell: 'sh', createSession: () => execution }), files, sessions, workspaces, execution };
+	}
+
+	function command(command = 'npm test'): ICloudCodeAgentResponse {
+		return tool('run_command', { root: 'root-1', path: '', command, explanation: 'Run the relevant tests' });
+	}
+
 	function requestData(service: TestService, index: number): { snapshots: { attachment: number; content: string; path: string }[]; referencedFiles: { root: string; path: string }[]; previousConversation: ICloudCodeMessage[]; remainingCalls: number } {
 		return JSON.parse(service.requests[index].messages.find(message => message.role === 'user' && message.content.startsWith('{"task":'))!.content);
 	}
+
+	test('runs the edit, failing check, fix and passing check loop with distinct applied checkpoints and final pending changes', async () => {
+		const test = setupExecution([
+			tool('read', { root: 'root-1', path: 'main.ts' }),
+			tool('apply_patch', { root: 'root-1', path: 'main.ts', oldText: 'original', newText: 'broken' }),
+			command(),
+			tool('read', { root: 'root-1', path: 'main.ts' }),
+			tool('apply_patch', { root: 'root-1', path: 'main.ts', oldText: 'broken', newText: 'fixed' }),
+			command(),
+			tool('read', { root: 'root-1', path: 'main.ts' }),
+			tool('apply_patch', { root: 'root-1', path: 'main.ts', oldText: 'fixed', newText: 'final pending change' }),
+			answer('The checked fix is applied; the final pending change has not been verified.')
+		], { 'main.ts': 'original' });
+		const execute = test.execution.onRun;
+		test.execution.onRun = async (command, session, token) => {
+			const result = await execute(command, session, token);
+			return { ...result, exitCode: test.execution.calls.length === 1 ? 1 : 0, stdout: '', stderr: test.execution.calls.length === 1 ? 'Expected fixed, received broken' : '' };
+		};
+		const result = await test.run();
+		assert.deepStrictEqual({
+			disk: test.files.get('main.ts'), pending: result.editingSession?.changes[0].after.content,
+			checkpoints: result.checkpoints?.map(session => [session.status, session.changes[0].after.content]),
+			remainingCalls: requestData(test.service, 0).remainingCalls,
+			commandTool: test.service.requests[0].tools.at(-1)?.name,
+			postCommandSnapshots: [requestData(test.service, 3).snapshots, requestData(test.service, 6).snapshots],
+			feedback: test.service.requests[6].messages.filter(message => message.role === 'tool').map(message => JSON.parse(message.content)).filter(message => 'exitCode' in message).map(message => [message.ok, message.exitCode]),
+			disposed: test.workspaces.map(workspace => workspace.disposed), executorDisposed: test.execution.disposed, count: result.commandCount
+		}, { disk: 'fixed', pending: 'final pending change', checkpoints: [['applied', 'broken'], ['applied', 'fixed']], remainingCalls: 40, commandTool: 'run_command', postCommandSnapshots: [[], []], feedback: [[false, 1], [true, 0]], disposed: [false, false, false], executorDisposed: true, count: 2 });
+		assert.ok(test.service.requests[0].messages[0].content.includes('those final changes have not been verified'));
+	});
+
+	test('validates command root, cwd, exact arguments and bounded text before execution', async () => {
+		const valid = { root: 'root-1', path: '', command: 'npm test', explanation: 'Run tests' };
+		for (const patch of [
+			{ root: 'missing' }, { path: '../outside' }, { path: 'C:\\outside' }, { path: '/outside' },
+			{ command: '' }, { command: 'x'.repeat(8193) }, { command: 'echo \0' }, { command: 5 },
+			{ explanation: '' }, { explanation: 'x'.repeat(501) }, { explanation: 'hidden\ntext' }, { dangerous: true }
+		]) {
+			const test = setupExecution(repeated(tool('run_command', { ...valid, ...patch })));
+			await assert.rejects(test.run(), /unsupported Agent action/);
+			assert.deepStrictEqual({ calls: test.execution.calls, disposed: test.execution.disposed }, { calls: [], disposed: true });
+		}
+	});
+
+	test('requires both editing and command factories before advertising or executing commands', async () => {
+		const factory: ICloudCodeAgentExecutionFactory = { shell: 'cmd', createSession: () => { throw new Error('Must not create'); } };
+		const test = setup(repeated(command()), undefined, factory);
+		await assert.rejects(test.run(), /unsupported Agent action/);
+		assert.strictEqual(test.service.requests[0].tools.some(tool => tool.name === 'run_command'), false);
+	});
+
+	test('denied command keeps staged changes pending and provides no successful check result', async () => {
+		const test = setupExecution([
+			tool('create_file', { root: 'root-1', path: 'new.ts', content: 'pending' }), command(), answer('Pending changes are ready; the check was declined.')
+		]);
+		test.execution.onRun = async () => ({ denied: true });
+		const result = await test.run();
+		const feedback = test.service.requests[2].messages.filter(message => message.role === 'tool').map(message => JSON.parse(message.content)).at(-1);
+		assert.deepStrictEqual({ status: result.editingSession?.status, disk: [...test.files], checkpoints: result.checkpoints, feedback: [feedback.ok, feedback.code], count: result.commandCount }, { status: 'pending', disk: [], checkpoints: undefined, feedback: [false, 'command_denied'], count: 1 });
+	});
+
+	test('command-only execution resets file observations and reads command changes from disk', async () => {
+		const test = setupExecution([
+			tool('read', { root: 'root-1', path: 'main.ts' }), command(),
+			tool('apply_patch', { root: 'root-1', path: 'main.ts', oldText: 'original', newText: 'stale edit' }),
+			tool('read', { root: 'root-1', path: 'main.ts' }),
+			tool('apply_patch', { root: 'root-1', path: 'main.ts', oldText: 'command changed', newText: 'correct edit' }), answer('Ready')
+		], { 'main.ts': 'original' });
+		const execute = test.execution.onRun;
+		test.execution.onRun = async (command, session, token) => {
+			const result = await execute(command, session, token);
+			test.files.set('main.ts', 'command changed');
+			return result;
+		};
+		const result = await test.run();
+		assert.deepStrictEqual({ original: result.editingSession?.changes[0].before.content, final: result.editingSession?.changes[0].after.content, disposed: test.workspaces[0].disposed, checkpoints: result.checkpoints, staleSnapshots: requestData(test.service, 2).snapshots, corrected: test.progress.includes('Checking the file before retrying the change…') }, { original: 'command changed', final: 'correct edit', disposed: true, checkpoints: undefined, staleSnapshots: [], corrected: true });
+	});
+
+	test('Stop waits for command cleanup and transfers checkpoints applied before cancellation', async () => {
+		const test = setupExecution([tool('create_file', { root: 'root-1', path: 'new.ts', content: 'applied' }), command()]);
+		const cancellation = disposables.add(new CancellationTokenSource());
+		const started = new DeferredPromise<void>();
+		const finished = new DeferredPromise<CloudCodeAgentCommandResult>();
+		const execute = test.execution.onRun;
+		test.execution.onRun = async (command, session, token) => {
+			await execute(command, session, token);
+			await started.complete();
+			return finished.p;
+		};
+		let settled = false;
+		const running = test.run([], cancellation.token).then(result => { settled = true; return result; });
+		await started.p;
+		cancellation.cancel();
+		await Promise.resolve();
+		assert.strictEqual(settled, false);
+		await finished.complete({ exitCode: null, stdout: '', stderr: '', timedOut: false, cancelled: true, truncated: false });
+		const result = await running;
+		assert.deepStrictEqual({ incomplete: result.incomplete, checkpoint: result.checkpoints?.[0].status, disposed: test.workspaces[0].disposed, executorDisposed: test.execution.disposed, requests: test.service.requests.length, count: result.commandCount, error: result.error }, { incomplete: true, checkpoint: 'applied', disposed: false, executorDisposed: true, requests: 2, count: 1, error: undefined });
+	});
+
+	test('failure after checkpoint application reports fixed feedback without losing undo or exposing raw errors', async () => {
+		const test = setupExecution([tool('create_file', { root: 'root-1', path: 'new.ts', content: 'applied' }), command(), answer('The checkpoint was applied but the check failed to launch.')]);
+		const execute = test.execution.onRun;
+		test.execution.onRun = async (command, session, token) => { await execute(command, session, token); throw new Error('Secret /private/path credential'); };
+		const result = await test.run();
+		assert.deepStrictEqual({ checkpoint: result.checkpoints?.[0].status, pending: result.editingSession, disposed: test.workspaces.map(workspace => workspace.disposed), leaked: JSON.stringify([test.service.requests, test.service.diagnostics]).includes('Secret /private/path credential'), diagnostics: test.service.diagnostics.map(diagnostic => [diagnostic.code, diagnostic.stage]) }, { checkpoint: 'applied', pending: undefined, disposed: [false, true], leaked: false, diagnostics: [['operation_failed', 'command']] });
+	});
+
+	test('locally authored setup failures explain the blocked command to the model and user', async () => {
+		const test = setupExecution([command(), answer('Save your open files before running this check.')]);
+		const reason = 'Save all open files before running an Agent command.';
+		test.execution.onRun = async () => { throw new CloudCodeAgentExecutionError(reason); };
+		const result = await test.run();
+		const feedback = JSON.parse(test.service.requests[1].messages.find(message => message.role === 'tool')!.content);
+		assert.deepStrictEqual({ feedback: [feedback.ok, feedback.code, feedback.reason], visibleReason: test.progress.includes('Command could not complete: ' + reason), incomplete: result.incomplete, diagnostics: test.service.diagnostics.map(diagnostic => [diagnostic.code, diagnostic.stage]) }, { feedback: [false, 'command_failed', reason], visibleReason: true, incomplete: undefined, diagnostics: [['operation_failed', 'command']] });
+	});
+
+	test('fatal command failures stop the loop and retain their explanation and applied checkpoint even after Stop', async () => {
+		for (const cancelled of [false, true]) {
+			const test = setupExecution([tool('create_file', { root: 'root-1', path: 'new.ts', content: 'applied' }), command(), answer('Must not continue')]);
+			const cancellation = disposables.add(new CancellationTokenSource());
+			const reason = 'The command may still be running. Stop it before continuing.';
+			const execute = test.execution.onRun;
+			test.execution.onRun = async (command, session, token) => {
+				await execute(command, session, token);
+				if (cancelled) { cancellation.cancel(); }
+				throw new CloudCodeAgentExecutionError(reason, true);
+			};
+			const result = await test.run([], cancellation.token);
+			assert.deepStrictEqual({ incomplete: result.incomplete, error: result.error, checkpoint: result.checkpoints?.[0].status, disposed: test.workspaces[0].disposed, executorDisposed: test.execution.disposed, requests: test.service.requests.length, diagnostics: test.service.diagnostics.map(diagnostic => [diagnostic.code, diagnostic.stage]) }, { incomplete: true, error: reason, checkpoint: 'applied', disposed: false, executorDisposed: true, requests: 2, diagnostics: [['operation_failed', 'command']] });
+		}
+	});
+
+	test('partial checkpoint application stops and retains its recovery handle', async () => {
+		const test = setupExecution([tool('create_file', { root: 'root-1', path: 'new.ts', content: 'partial' }), command(), answer('Must not continue')]);
+		test.execution.onRun = async (_command, session) => { test.workspaces[0].apply = async () => false; await session.preview(); await session.apply(); throw new Error('Unreachable'); };
+		const result = await test.run();
+		assert.deepStrictEqual({ incomplete: result.incomplete, status: result.checkpoints?.[0].status, disposed: test.workspaces[0].disposed, requests: test.service.requests.length }, { incomplete: true, status: 'partial', disposed: false, requests: 2 });
+	});
+
+	test('late model failure preserves applied checkpoints and discards the later pending overlay', async () => {
+		const test = setupExecution([tool('create_file', { root: 'root-1', path: 'first.ts', content: 'applied' }), command(), tool('create_file', { root: 'root-1', path: 'second.ts', content: 'pending' }), ...repeated(tool('unsupported', {}))]);
+		const result = await test.run();
+		assert.deepStrictEqual({ incomplete: result.incomplete, count: result.checkpoints?.length, pending: result.editingSession, disk: [...test.files], disposed: test.workspaces.map(workspace => workspace.disposed) }, { incomplete: true, count: 1, pending: undefined, disk: [['first.ts', 'applied']], disposed: [false, true] });
+	});
+
+	test('caps command attempts at four and marks a denied or timed-out check as unsuccessful', async () => {
+		const test = setupExecution([command(), command(), command(), command(), command(), answer('Must not continue')]);
+		test.execution.onRun = async () => ({ exitCode: 0, stdout: '', stderr: '', timedOut: true, cancelled: false, truncated: false });
+		const result = await test.run();
+		assert.deepStrictEqual({ incomplete: result.incomplete, count: result.commandCount, calls: test.execution.calls.length, timedOutSuccess: test.service.requests[1].messages.filter(message => message.role === 'tool').map(message => JSON.parse(message.content).ok) }, { incomplete: true, count: 4, calls: 4, timedOutSuccess: [false] });
+	});
+
+	test('bounds command output including JSON escaping and never puts raw output in diagnostics or progress', async () => {
+		const test = setupExecution([command(), ...repeated(tool('unsupported', {}))]);
+		test.execution.onRun = async () => ({ exitCode: 1, stdout: 'private-output' + '\t'.repeat(8192), stderr: 'x'.repeat(20000), timedOut: false, cancelled: false, truncated: false });
+		const result = await test.run();
+		const feedback = JSON.parse(test.service.requests[1].messages.find(message => message.role === 'tool')!.content);
+		assert.deepStrictEqual({ incomplete: result.incomplete, truncated: feedback.truncated, withinLimits: test.service.requests.every(request => request.messages.every(message => message.content.length <= CLOUDCODE_MAX_MESSAGE_LENGTH)), leaked: JSON.stringify([test.service.diagnostics, test.progress, result]).includes('private-output') }, { incomplete: true, truncated: true, withinLimits: true, leaked: false });
+	});
+
+	test('execution-enabled tasks enforce forty model calls', async () => {
+		const test = setupExecution([command(), ...Array.from({ length: 40 }, () => tool('list', { root: 'root-1', path: '' }))]);
+		const result = await test.run();
+		assert.deepStrictEqual({ incomplete: result.incomplete, requests: test.service.requests.length, error: result.error?.includes('40-call limit') }, { incomplete: true, requests: 40, error: true });
+	});
+
+	test('execution-enabled deadline preserves applied checkpoints after fifteen minutes', async () => {
+		const clock = sinon.useFakeTimers();
+		try {
+			const test = setupExecution([tool('create_file', { root: 'root-1', path: 'new.ts', content: 'applied' }), command()]);
+			const started = new DeferredPromise<void>();
+			test.service.onRequest = async () => {
+				const next = test.service.responses.shift();
+				if (next) { return next; }
+				await started.complete();
+				return new Promise(() => { });
+			};
+			const running = test.run();
+			await started.p;
+			await clock.tickAsync(15 * 60 * 1000);
+			const result = await running;
+			assert.deepStrictEqual({ incomplete: result.incomplete, status: result.checkpoints?.[0].status, timers: clock.countTimers(), error: result.error, diagnostic: test.service.diagnostics[0]?.code }, { incomplete: true, status: 'applied', timers: 0, error: 'Agent reached its fifteen-minute limit.', diagnostic: 'timeout' });
+		} finally { clock.restore(); }
+	});
 
 	test('uses native function definitions and accepts plain text without interpreting it as an action', async () => {
 		const text = '{"action":"tool","tool":"shell","command":"rm file"}';
