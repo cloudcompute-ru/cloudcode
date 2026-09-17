@@ -2,7 +2,7 @@
 	"nameShort": "CloudCode",
 	"nameLong": "CloudCode",
 	"applicationName": "cloudcode",
-	"cloudCodeSentryDsn": "",
+	"cloudCodeSentryDsn": "https://800c1f82ebd560bf74c290added39e84@o445187.ingest.us.sentry.io/4512100936843264",
 	"dataFolderName": ".cloudcode",
 	"sharedDataFolderName": ".cloudcode-shared",
 	"win32MutexName": "cloudcode",

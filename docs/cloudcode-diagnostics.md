@@ -4,11 +4,11 @@ Agent failures can happen after a successful HTTP response. For example, the mod
 
 CloudCode explicitly reports failed Agent runs through the shared desktop process. Each accepted report is written to the local shared-process log, even when Sentry is not configured. Search for `[CloudCode Agent]` using **Developer: Open Logs Folder**. The message shown in chat remains unchanged.
 
-## Activate Sentry
+## Sentry configuration
 
-Use a separate Sentry project named `cloudcode` for desktop diagnostics. Copy its **public DSN** into the existing `cloudCodeSentryDsn` field in the repository's `product.json`, then rebuild the installer with `scripts\build-cloudcode-win32.bat`. A public DSN is distributed with the application; do not put a Sentry auth token in this field.
+The separate Sentry project named `cloudcode` is configured through its **public DSN** in the repository's `product.json` field `cloudCodeSentryDsn`. Rebuild the installer with `scripts\build-cloudcode-win32.bat` to include this configuration. A public DSN is distributed with the application; do not put a Sentry auth token in this field.
 
-The checked-in value is empty, so remote reporting is inactive until configured. Users do not need environment variables. Subsequent diagnostic events appear as `CloudCode Agent: <code>` and include a release such as `cloudcode@<version>+<commit>`.
+The checked-in DSN enables remote reporting in rebuilt applications, subject to the reporting and telemetry settings below. Users do not need environment variables. Subsequent diagnostic events appear as `CloudCode Agent: <code>` and include a release such as `cloudcode@<version>+<commit>`.
 
 Reports contain only:
 
@@ -24,4 +24,4 @@ Users can disable remote reporting with `cloudcode.errorReporting.enabled: false
 
 This integration captures handled failures from Agent tasks, including inference failures encountered during those tasks. It does not yet provide general Electron crash reporting, global renderer exception capture, or reporting for ordinary Ask, sign-in and extension errors. Installing global crash handlers alone would not capture the handled Agent failure that prompted this change.
 
-The diagnostics tests exercise the real Sentry SDK against a loopback endpoint and verify the outgoing event. After adding a DSN and rebuilding, reproduce an Agent failure and confirm the event's model, code, stage and release in Sentry. Successful answers and user cancellations should not generate events. A live Sentry project and a Windows installer run must be checked separately.
+The diagnostics tests exercise the real Sentry SDK against a loopback endpoint and verify the outgoing event. After rebuilding with the configured DSN, reproduce an Agent failure and confirm the event's model, code, stage and release in Sentry. Successful answers and user cancellations should not generate events. A live Sentry project and a Windows installer run must be checked separately.
