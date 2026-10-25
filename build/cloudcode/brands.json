@@ -1,0 +1,56 @@
+{
+	"cloudcompute": {
+		"nameShort": "CloudCode",
+		"nameLong": "CloudCode",
+		"applicationName": "cloudcode",
+		"dataFolderName": ".cloudcode",
+		"sharedDataFolderName": ".cloudcode-shared",
+		"win32MutexName": "cloudcode",
+		"win32DirName": "CloudCode",
+		"win32NameVersion": "CloudCode",
+		"win32RegValueName": "CloudCode",
+		"win32x64AppId": "{{1C049A3A-1CB9-4F67-BD48-EA671B03BFD4}",
+		"win32arm64AppId": "{{33BC33E6-5031-4431-B75B-FA602398A27C}",
+		"win32x64UserAppId": "{{B0C31349-45F8-48F2-B393-C4F87821BE08}",
+		"win32arm64UserAppId": "{{CB37696C-10A2-4E1B-8D4E-E3643A33F4D5}",
+		"win32AppUserModelId": "CloudCompute.CloudCode",
+		"win32ShellNameShort": "&CloudCode",
+		"darwinBundleIdentifier": "ru.cloudcompute.cloudcode",
+		"darwinProfileUUID": "5FB982D8-C802-4222-9C61-D51B403A4815",
+		"darwinProfilePayloadUUID": "FF06A3BC-95C4-4186-8ED9-ABE7F47052CA",
+		"linuxIconName": "cloudcode",
+		"urlProtocol": "cloudcode",
+		"cloudCodeBranding": {
+			"name": "CloudCode",
+			"serviceName": "CloudCompute",
+			"serverUrl": "https://app.cloudcompute.ru"
+		}
+	},
+	"atmoscode": {
+		"nameShort": "AtmosCode",
+		"nameLong": "AtmosCode",
+		"applicationName": "atmoscode",
+		"dataFolderName": ".atmoscode",
+		"sharedDataFolderName": ".atmoscode-shared",
+		"win32MutexName": "atmoscode",
+		"win32DirName": "AtmosCode",
+		"win32NameVersion": "AtmosCode",
+		"win32RegValueName": "AtmosCode",
+		"win32x64AppId": "{{49CC8BCC-AAC5-4998-9ADA-13E82B967139}",
+		"win32arm64AppId": "{{CD656772-3FAF-422A-9CED-EB6ABBB57734}",
+		"win32x64UserAppId": "{{2E416AA1-2D29-40D5-9060-39336FA5268F}",
+		"win32arm64UserAppId": "{{0B98217D-BBBC-40DC-88B5-0D4CA961CF09}",
+		"win32AppUserModelId": "AtmosCompute.AtmosCode",
+		"win32ShellNameShort": "&AtmosCode",
+		"darwinBundleIdentifier": "com.atmoscompute.atmoscode",
+		"darwinProfileUUID": "B715F506-21C5-4C71-952F-DF3AF8A88AC9",
+		"darwinProfilePayloadUUID": "BF5D7FEC-D093-4209-B06C-00A1F2D04F02",
+		"linuxIconName": "atmoscode",
+		"urlProtocol": "atmoscode",
+		"cloudCodeBranding": {
+			"name": "AtmosCode",
+			"serviceName": "AtmosCompute",
+			"serverUrl": "https://app.atmoscompute.com"
+		}
+	}
+}

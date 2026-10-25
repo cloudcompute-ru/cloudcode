@@ -97,6 +97,13 @@ export interface IDictationRuntimeProductConfig {
 }
 
 export interface IProductConfiguration {
+	/** Branding and default account server of this desktop distribution. */
+	readonly cloudCodeBranding?: {
+		readonly name: string;
+		readonly serviceName: string;
+		readonly serverUrl: string;
+	};
+
 	/** Public Sentry DSN for CloudCode desktop diagnostics; unset disables remote reporting. */
 	readonly cloudCodeSentryDsn?: string;
 

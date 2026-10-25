@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { CLOUDCODE_PRODUCT_NAME } from '../../../../platform/cloudCode/common/cloudCodeBrand.js';
 import { toDisposable, IDisposable } from '../../../../base/common/lifecycle.js';
 import { StorageScope, StorageTarget, IStorageService } from '../../../../platform/storage/common/storage.js';
 import { size } from '../../../../base/browser/dom.js';
@@ -76,7 +77,7 @@ export class CloudCodeChatViewPane extends ViewPane {
 		this.agent = new CloudCodeAgent(cloudCodeService, agentWorkspace, this.editWorkspace, editingWorkspace, instantiationService.createInstance(CloudCodeAgentExecutionFactory));
 		this._register(lifecycleService.onWillShutdown(event => {
 			if (this.controller) {
-				event.join(this.controller.shutdown(), { id: 'cloudcode.chat', label: localize('cloudcode.stoppingChat', "Stopping CloudCode chat") });
+				event.join(this.controller.shutdown(), { id: 'cloudcode.chat', label: localize('cloudcode.stoppingChat', "Stopping {0} chat", CLOUDCODE_PRODUCT_NAME) });
 			}
 		}));
 	}

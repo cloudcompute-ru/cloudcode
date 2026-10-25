@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { CLOUDCODE_PRODUCT_NAME, CLOUDCODE_SERVICE_NAME } from '../../../../platform/cloudCode/common/cloudCodeBrand.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IOpenerService } from '../../../../platform/opener/common/opener.js';
@@ -27,30 +28,30 @@ import { Extensions as OutputExtensions, IOutputChannelRegistry } from '../../..
 import { CLOUDCODE_COMMAND_OUTPUT_CHANNEL } from '../common/cloudCodeAgentExecution.js';
 
 const containerId = 'workbench.view.cloudCodeChat';
-const title = localize2('cloudCode.chat.title', "CloudCode Chat");
-const icon = registerIcon('cloudcode-chat-view-icon', Codicon.commentDiscussion, localize('cloudCode.chat.icon', "View icon of CloudCode Chat."));
+const title = localize2('cloudCode.chat.title', "{0} Chat", CLOUDCODE_PRODUCT_NAME);
+const icon = registerIcon('cloudcode-chat-view-icon', Codicon.commentDiscussion, localize('cloudCode.chat.icon', "View icon of {0} Chat.", CLOUDCODE_PRODUCT_NAME));
 
 Registry.as<IOutputChannelRegistry>(OutputExtensions.OutputChannels).registerChannel({
 	id: CLOUDCODE_COMMAND_OUTPUT_CHANNEL,
-	label: localize('cloudCode.commandOutput', "CloudCode Agent Commands"),
+	label: localize('cloudCode.commandOutput', "{0} Agent Commands", CLOUDCODE_PRODUCT_NAME),
 	log: false,
 });
 
 Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
 	id: 'cloudcode',
-	title: localize('cloudCode.configuration', "CloudCode"),
+	title: localize('cloudCode.configuration', "{0}", CLOUDCODE_PRODUCT_NAME),
 	properties: {
 		[CLOUDCODE_ERROR_REPORTING_SETTING]: {
 			type: 'boolean',
 			default: true,
 			scope: ConfigurationScope.APPLICATION,
-			description: localize('cloudCode.errorReporting', "Send technical Agent error diagnostics to CloudCompute when reporting is configured. Reports exclude prompts, source code, model responses and account details. Requires the telemetry level to permit error reporting."),
+			description: localize('cloudCode.errorReporting', "Send technical Agent error diagnostics to {0} when reporting is configured. Reports exclude prompts, source code, model responses and account details. Requires the telemetry level to permit error reporting.", CLOUDCODE_SERVICE_NAME),
 		},
 		[CLOUDCODE_SERVER_SETTING]: {
 			type: 'string',
 			default: CLOUDCODE_DEFAULT_SERVER,
 			scope: ConfigurationScope.APPLICATION,
-			description: localize('cloudCode.serverUrl', "CloudCompute server used for sign-in and chat. Requires HTTPS; HTTP is allowed only for loopback development servers. Changing the server signs you out."),
+			description: localize('cloudCode.serverUrl', "{0} server used for sign-in and chat. Requires HTTPS; HTTP is allowed only for loopback development servers. Changing the server signs you out.", CLOUDCODE_SERVICE_NAME),
 		}
 	}
 });
@@ -77,7 +78,7 @@ Registry.as<IViewsRegistry>(Extensions.ViewsRegistry).registerViews([{
 	openCommandActionDescriptor: {
 		id: containerId,
 		title,
-		mnemonicTitle: localize({ key: 'cloudCode.chat.menu', comment: ['&& denotes a mnemonic'] }, "&&CloudCode Chat"),
+		mnemonicTitle: localize({ key: 'cloudCode.chat.menu', comment: ['&& denotes a mnemonic'] }, "&&{0} Chat", CLOUDCODE_PRODUCT_NAME),
 		order: 0,
 	},
 }], container);
@@ -131,7 +132,7 @@ registerAction2(class extends Action2 {
 	constructor() {
 		super({
 			id: 'cloudcode.signIn',
-			title: localize2('cloudcode.signInAction', "Sign in to CloudCompute"),
+			title: localize2('cloudcode.signInAction', "Sign in to {0}", CLOUDCODE_SERVICE_NAME),
 			f1: true,
 			precondition: ContextKeyExpr.and(signedIn.negate(), signingIn.negate()),
 			menu: [

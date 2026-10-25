@@ -43,13 +43,18 @@ concurrency:
 
 jobs:
   windows-x64:
-    name: Windows x64 ZIP and User Setup
+    name: Windows x64 (${{ matrix.brand }}) ZIP and User Setup
+    strategy:
+      fail-fast: false
+      matrix:
+        brand: [cloudcompute, atmoscode]
     runs-on: windows-2022
     timeout-minutes: 180
     defaults:
       run:
         shell: pwsh
     env:
+      CLOUDCODE_BUILD_BRAND: ${{ matrix.brand }}
       NODE_OPTIONS: --max-old-space-size=4096
       VSCODE_QUALITY: oss
       VSCODE_ARCH: x64
@@ -100,6 +105,9 @@ jobs:
           }
           $sdkBin >> $env:GITHUB_PATH
 
+      - name: Select Product Branding
+        run: node build/cloudcode/brand.mjs --brand $env:CLOUDCODE_BUILD_BRAND
+
       - name: Install Dependencies
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -110,6 +118,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Unable to configure OSS dependencies.' }
           npm ci
           if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed.' }
+
+      - name: Test Brand Profiles
+        run: npm run cloudcode:test-branding
 
       - name: Download Built-in Extensions
         env:
@@ -135,15 +146,17 @@ jobs:
         run: |
           $app = Join-Path (Split-Path $env:GITHUB_WORKSPACE) 'VSCode-win32-x64'
           $product = Get-Content (Join-Path $app 'resources/app/product.json') -Raw | ConvertFrom-Json
+          $profiles = Get-Content build/cloudcode/brands.json -Raw | ConvertFrom-Json
+          $expected = $profiles.PSObject.Properties[$env:CLOUDCODE_BUILD_BRAND].Value
           $commit = git rev-parse HEAD
           if ($LASTEXITCODE -ne 0) { throw 'Unable to read source commit.' }
-          if ($product.nameShort -ne 'CloudCode' -or $product.commit -ne $commit -or $product.disableBuiltinCopilot -ne $true) {
+          if ($product.nameShort -ne $expected.nameShort -or $product.commit -ne $commit -or $product.disableBuiltinCopilot -ne $true) {
             throw 'Packaged branding, source commit or Copilot configuration is incorrect.'
           }
           if (Test-Path (Join-Path $app 'resources/app/extensions/copilot')) {
             throw 'The Copilot extension must not be included in CloudCode.'
           }
-          & (Join-Path $app 'bin/cloudcode.cmd') --version
+          & (Join-Path $app ('bin/' + $expected.applicationName + '.cmd')) --version
           if ($LASTEXITCODE -ne 0) { throw 'The packaged CloudCode CLI failed to start.' }
 
       - name: Build User Installer
@@ -155,7 +168,8 @@ jobs:
           $commit = git rev-parse HEAD
           if ($LASTEXITCODE -ne 0) { throw 'Unable to read source commit.' }
           $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
-          $buildName = "CloudCode-$version-$($commit.Substring(0, 8))-win32-x64"
+          $brand = (Get-Content product.json -Raw | ConvertFrom-Json).nameShort
+          $buildName = "$brand-$version-$($commit.Substring(0, 8))-win32-x64"
           $app = Join-Path (Split-Path $env:GITHUB_WORKSPACE) 'VSCode-win32-x64'
           $downloads = Join-Path $env:GITHUB_WORKSPACE '.build/cloudcode-downloads'
           New-Item $downloads -ItemType Directory -Force | Out-Null
@@ -194,7 +208,7 @@ jobs:
           ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
         run: |
           @"
-          [Download CloudCode for Windows x64]($env:ARTIFACT_URL)
+          [Download the Windows x64 build]($env:ARTIFACT_URL)
 
           Includes the application ZIP, per-user installer, SHA-256 checksums and source commit.
           These are unsigned development builds, retained for 14 days. Windows may show an unknown publisher warning.

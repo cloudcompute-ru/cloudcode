@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { CLOUDCODE_PRODUCT_NAME } from '../../../../platform/cloudCode/common/cloudCodeBrand.js';
 import { VSBuffer, readableToBuffer } from '../../../../base/common/buffer.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { CancellationError } from '../../../../base/common/errors.js';
@@ -165,7 +166,7 @@ export class CloudCodeEditingWorkspace extends Disposable implements ICloudCodeE
 		});
 		const pane = await this.editorService.openEditor({
 			multiDiffSource: URI.from({ scheme: previewScheme, authority: revision, path: '/task' }),
-			label: localize('cloudCode.session.preview', "CloudCode — Task Changes"),
+			label: localize('cloudCode.session.preview', "{0} — Task Changes", CLOUDCODE_PRODUCT_NAME),
 			resources,
 			isTransient: true,
 			options: { pinned: true },
@@ -233,7 +234,7 @@ export class CloudCodeEditingWorkspace extends Disposable implements ICloudCodeE
 		let complete = false;
 		try {
 			const result = await this.bulkEditService.apply([...textEdits, ...fileEdits], {
-				label: localize('cloudCode.session.undoLabel', "CloudCode Task Changes"), code: this.code, undoRedoSource: this.source,
+				label: localize('cloudCode.session.undoLabel', "{0} Task Changes", CLOUDCODE_PRODUCT_NAME), code: this.code, undoRedoSource: this.source,
 				skipFileOperationParticipants: true,
 			});
 			complete = result.isApplied;

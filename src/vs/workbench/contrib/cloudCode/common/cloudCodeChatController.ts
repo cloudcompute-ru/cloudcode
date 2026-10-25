@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { CLOUDCODE_PRODUCT_NAME } from '../../../../platform/cloudCode/common/cloudCodeBrand.js';
 import { cloudCodeImagesWithinLimit } from '../../../../platform/cloudCode/common/cloudCodeImages.js';
 import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { ICloudCodeConversation, ICloudCodeConversationStorage, parseCloudCodeConversations, serializeCloudCodeConversations } from './cloudCodeConversations.js';
@@ -865,7 +866,7 @@ export class CloudCodeChatController extends Disposable {
 
 	private showError(error: unknown): void {
 		if (!this.disposed) {
-			this.view.setError(error instanceof Error ? error.message : localize('cloudcode.unexpectedError', "CloudCode could not complete this action. Please try again."));
+			this.view.setError(error instanceof Error ? error.message : localize('cloudcode.unexpectedError', "{0} could not complete this action. Please try again.", CLOUDCODE_PRODUCT_NAME));
 		}
 	}
 
