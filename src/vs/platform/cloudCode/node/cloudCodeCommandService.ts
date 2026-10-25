@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { CLOUDCODE_PRODUCT_NAME } from '../common/cloudCodeBrand.js';
 import { ChildProcess, spawn, SpawnOptionsWithoutStdio } from 'child_process';
 import { lstat } from 'fs/promises';
 import { isAbsolute, win32 } from 'path';
@@ -139,7 +140,7 @@ export class CloudCodeCommandService extends Disposable implements ICloudCodeCom
 			throw new Error(localize('cloudcode.invalidCommand', "The command, working directory, or time limit is invalid."));
 		}
 		if (this.runs.has(requestId) || this.runs.size >= maximumConcurrentCommands) {
-			throw new Error(localize('cloudcode.commandBusy', "CloudCode already has too many commands running, or this command was already started."));
+			throw new Error(localize('cloudcode.commandBusy', "{0} already has too many commands running, or this command was already started.", CLOUDCODE_PRODUCT_NAME));
 		}
 		const run: ICommandRun = { cancelled: false, timedOut: false, done: new DeferredPromise<void>(), stop: new DeferredPromise<void>() };
 		this.runs.set(requestId, run);
@@ -209,7 +210,7 @@ export class CloudCodeCommandService extends Disposable implements ICloudCodeCom
 		const unconfirmed = () => {
 			this.terminationFailed = true;
 			failure = 'termination_failed';
-			run.terminationError = new Error(localize('cloudcode.commandStopFailed', "CloudCode could not confirm that the command and its child processes stopped. Check their state and restart CloudCode before running another command."));
+			run.terminationError = new Error(localize('cloudcode.commandStopFailed', "{0} could not confirm that the command and its child processes stopped. Check their state and restart {0} before running another command.", CLOUDCODE_PRODUCT_NAME));
 		};
 		const onError = (error: Error) => {
 			launchError = error;
@@ -258,7 +259,7 @@ export class CloudCodeCommandService extends Disposable implements ICloudCodeCom
 				} else if (child.pid) {
 					await this.bounded(this.runtime.terminate(child.pid), terminationTimeoutMs, localize('cloudcode.commandStopTimeout', "The command could not be stopped in time. Check its processes before running another command."));
 				}
-				await this.bounded(closed.p, terminationTimeoutMs, localize('cloudcode.commandStillRunning', "CloudCode could not confirm that the command stopped. Check its processes before running another command."));
+				await this.bounded(closed.p, terminationTimeoutMs, localize('cloudcode.commandStillRunning', "{0} could not confirm that the command stopped. Check its processes before running another command.", CLOUDCODE_PRODUCT_NAME));
 			} catch {
 				unconfirmed();
 				if (this.runtime.windows && child.pid) {

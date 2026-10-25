@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { CLOUDCODE_PRODUCT_NAME } from '../common/cloudCodeBrand.js';
 import { createHash, randomBytes } from 'crypto';
 import type { IncomingMessage, Server, ServerResponse } from 'http';
 import { CancellationToken } from '../../../base/common/cancellation.js';
@@ -45,7 +46,7 @@ function validReasoningDetails(value: unknown): value is Record<string, unknown>
 
 /** Validate the shared-process boundary before serializing model control data. */
 export function createCloudCodeAgentPayload(model: string, messages: readonly ICloudCodeAgentMessage[], tools: readonly ICloudCodeToolDefinition[], maxOutputTokens = 4096) {
-	const invalid = () => new Error(localize('cloudcode.agentRequestInvalid', "This Agent request is invalid or exceeds the CloudCode limit. Start a new chat or use a shorter message."));
+	const invalid = () => new Error(localize('cloudcode.agentRequestInvalid', "This Agent request is invalid or exceeds the {0} limit. Start a new chat or use a shorter message.", CLOUDCODE_PRODUCT_NAME));
 	const namePattern = /^[A-Za-z0-9_-]{1,64}$/;
 	const idPattern = /^[A-Za-z0-9_-]{1,128}$/;
 	if (typeof model !== 'string' || !model || model.length > 200 || !Array.isArray(messages) || !messages.length || messages.length > CLOUDCODE_MAX_AGENT_MESSAGES
@@ -129,7 +130,7 @@ export function parseCloudCodeAuthConfiguration(value: unknown, origin: string):
 		|| value.token_endpoint !== `${origin}/cloudcode/oauth/token`
 		|| value.redirect_uri !== CLOUDCODE_REDIRECT_URI || value.scope !== 'cloudcode:inference'
 		|| value.api_base_url !== `${origin}/cloudcode/api`) {
-		throw new Error(localize('cloudcode.authConfigurationInvalid', "This server is not configured for CloudCode sign-in."));
+		throw new Error(localize('cloudcode.authConfigurationInvalid', "This server is not configured for {0} sign-in.", CLOUDCODE_PRODUCT_NAME));
 	}
 	return {
 		client_id: value.client_id,
@@ -194,8 +195,8 @@ export class CloudCodeLoopback extends Disposable {
 			return;
 		}
 		if (url.searchParams.has('error')) {
-			response.end(localize('cloudcode.declinedCallback', "Sign-in was declined. You can return to CloudCode."));
-			this.fail(new Error(localize('cloudcode.signInDeclined', "CloudCode sign-in was declined.")));
+			response.end(localize('cloudcode.declinedCallback', "Sign-in was declined. You can return to {0}.", CLOUDCODE_PRODUCT_NAME));
+			this.fail(new Error(localize('cloudcode.signInDeclined', "{0} sign-in was declined.", CLOUDCODE_PRODUCT_NAME)));
 			return;
 		}
 		const code = url.searchParams.get('code');
@@ -204,7 +205,7 @@ export class CloudCodeLoopback extends Disposable {
 			return;
 		}
 		this.completed = true;
-		response.end(localize('cloudcode.returnToApp', "You can return to CloudCode to finish signing in."));
+		response.end(localize('cloudcode.returnToApp', "You can return to {0} to finish signing in.", CLOUDCODE_PRODUCT_NAME));
 		this.resolveCode(code);
 	}
 
@@ -216,10 +217,10 @@ export class CloudCodeLoopback extends Disposable {
 		const server = this.server = createServer((request, response) => this.handleRequest(request, response));
 		server.requestTimeout = 10000;
 		server.headersTimeout = 10000;
-		server.on('error', () => this.fail(new Error(localize('cloudcode.callbackPortBusy', "CloudCode could not open its sign-in callback on port 43827. Close any other CloudCode sign-in attempt and try again."))));
+		server.on('error', () => this.fail(new Error(localize('cloudcode.callbackPortBusy', "{0} could not open its sign-in callback on port 43827. Close any other {0} sign-in attempt and try again.", CLOUDCODE_PRODUCT_NAME))));
 		await new Promise<void>((resolve, reject) => {
 			const listeners = this._register(new DisposableStore());
-			const onError = () => { reject(new Error(localize('cloudcode.callbackPortBusy', "CloudCode could not open its sign-in callback on port 43827. Close any other CloudCode sign-in attempt and try again."))); listeners.dispose(); };
+			const onError = () => { reject(new Error(localize('cloudcode.callbackPortBusy', "{0} could not open its sign-in callback on port 43827. Close any other {0} sign-in attempt and try again.", CLOUDCODE_PRODUCT_NAME))); listeners.dispose(); };
 			server.once('error', onError);
 			listeners.add(toDisposable(() => server.removeListener('error', onError)));
 			listeners.add(toDisposable(() => reject(canceled())));
@@ -296,7 +297,7 @@ export class CloudCodeEventStream {
 			this.line(line);
 		}
 		if (this.buffer.length + this.eventSize > 1024 * 1024) {
-			throw new Error(localize('cloudcode.responseTooLarge', "The server response exceeded the CloudCode limit."));
+			throw new Error(localize('cloudcode.responseTooLarge', "The server response exceeded the {0} limit.", CLOUDCODE_PRODUCT_NAME));
 		}
 	}
 
@@ -310,7 +311,7 @@ export class CloudCodeEventStream {
 			this.data.push(data);
 			this.eventSize += data.length;
 			if (this.eventSize > 1024 * 1024) {
-				throw new Error(localize('cloudcode.responseTooLarge', "The server response exceeded the CloudCode limit."));
+				throw new Error(localize('cloudcode.responseTooLarge', "The server response exceeded the {0} limit.", CLOUDCODE_PRODUCT_NAME));
 			}
 		} else if (line.startsWith('event:')) {
 			this.event = line.slice(6).trim();
@@ -348,7 +349,7 @@ export class CloudCodeEventStream {
 			if (isRecord(choice) && isRecord(choice.delta) && typeof choice.delta.content === 'string') {
 				this.outputSize += choice.delta.content.length;
 				if (this.outputSize > 256 * 1024) {
-					throw new Error(localize('cloudcode.responseTooLarge', "The server response exceeded the CloudCode limit."));
+					throw new Error(localize('cloudcode.responseTooLarge', "The server response exceeded the {0} limit.", CLOUDCODE_PRODUCT_NAME));
 				}
 				this.onText(choice.delta.content);
 			}
@@ -397,7 +398,7 @@ export class CloudCodeAgentEventStream {
 	private count(value: string): string {
 		this.bytes += Buffer.byteLength(value, 'utf8');
 		if (this.bytes > 65536) {
-			throw new Error(localize('cloudcode.responseTooLarge', "The server response exceeded the CloudCode limit."));
+			throw new Error(localize('cloudcode.responseTooLarge', "The server response exceeded the {0} limit.", CLOUDCODE_PRODUCT_NAME));
 		}
 		return value;
 	}

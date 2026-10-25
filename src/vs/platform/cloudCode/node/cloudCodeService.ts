@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { CLOUDCODE_PRODUCT_NAME, CLOUDCODE_SERVICE_NAME } from '../common/cloudCodeBrand.js';
 import { cloudCodeImagesWithinLimit } from '../common/cloudCodeImages.js';
 import { VSBuffer } from '../../../base/common/buffer.js';
 import { raceCancellationError, Sequencer } from '../../../base/common/async.js';
@@ -34,16 +35,16 @@ interface IStoredTokens {
 class CloudCodeHttpError extends Error {
 	constructor(readonly status: number) {
 		super(status === 401
-			? localize('cloudcode.sessionExpired', "Your CloudCode session has expired. Sign in again.")
+			? localize('cloudcode.sessionExpired', "Your {0} session has expired. Sign in again.", CLOUDCODE_PRODUCT_NAME)
 			: status === 402
-				? localize('cloudcode.balanceRequired', "Your CloudCompute balance is insufficient for this request.")
+				? localize('cloudcode.balanceRequired', "Your {0} balance is insufficient for this request.", CLOUDCODE_SERVICE_NAME)
 				: status === 403
-					? localize('cloudcode.accessDenied', "This account does not have access to CloudCode inference. Check your team permissions.")
+					? localize('cloudcode.accessDenied', "This account does not have access to {0} inference. Check your team permissions.", CLOUDCODE_PRODUCT_NAME)
 					: status === 429
 						? localize('cloudcode.rateLimited', "Too many requests. Wait a moment and try again.")
 						: status === 422
 							? localize('cloudcode.requestInvalid', "This model or conversation is not supported. Choose another model or start a new chat.")
-							: localize('cloudcode.serverError', "CloudCompute could not complete the request (HTTP {0}). Please try again.", status));
+							: localize('cloudcode.serverError', "{1} could not complete the request (HTTP {0}). Please try again.", status, CLOUDCODE_SERVICE_NAME));
 	}
 }
 
@@ -51,7 +52,7 @@ function parseTokens(value: unknown, clientId: string): IStoredTokens {
 	if (!isRecord(value) || typeof value.access_token !== 'string' || !value.access_token || typeof value.refresh_token !== 'string' || !value.refresh_token
 		|| typeof value.expires_in !== 'number' || !Number.isFinite(value.expires_in) || value.expires_in <= 0 || value.expires_in > 86400
 		|| typeof value.token_type !== 'string' || value.token_type.toLowerCase() !== 'bearer') {
-		throw new Error(localize('cloudcode.invalidTokenResponse', "CloudCompute returned an invalid sign-in response."));
+		throw new Error(localize('cloudcode.invalidTokenResponse', "{0} returned an invalid sign-in response.", CLOUDCODE_SERVICE_NAME));
 	}
 	return { accessToken: value.access_token, refreshToken: value.refresh_token, expiresAt: Date.now() + value.expires_in * 1000, clientId };
 }
@@ -61,7 +62,7 @@ function parseAccount(value: unknown): ICloudCodeAccount {
 		|| typeof value.user.id !== 'number' || typeof value.user.name !== 'string' || typeof value.user.email !== 'string'
 		|| typeof value.team.id !== 'number' || typeof value.team.name !== 'string'
 		|| (value.balance !== null && (!isRecord(value.balance) || typeof value.balance.amount_minor !== 'number' || typeof value.balance.currency !== 'string'))) {
-		throw new Error(localize('cloudcode.invalidSession', "CloudCompute returned an invalid account response."));
+		throw new Error(localize('cloudcode.invalidSession', "{0} returned an invalid account response.", CLOUDCODE_SERVICE_NAME));
 	}
 	return {
 		user: { id: value.user.id, name: value.user.name, email: value.user.email },
@@ -178,7 +179,7 @@ export class CloudCodeService extends Disposable implements ICloudCodeService {
 				callback.waitForCode(),
 				this.nativeHostService.openExternal(authorization.url).then(opened => {
 					if (!opened) {
-						throw new Error(localize('cloudcode.browserFailed', "CloudCode could not open your browser. Please try signing in again."));
+						throw new Error(localize('cloudcode.browserFailed', "{0} could not open your browser. Please try signing in again.", CLOUDCODE_PRODUCT_NAME));
 					}
 				})
 			]);
@@ -248,7 +249,7 @@ export class CloudCodeService extends Disposable implements ICloudCodeService {
 				response.stream.destroy();
 			}
 		} catch {
-			failure = new Error(localize('cloudcode.revokeFailed', "Signed out on this device. CloudCompute could not confirm revocation of the server session."));
+			failure = new Error(localize('cloudcode.revokeFailed', "Signed out on this device. {0} could not confirm revocation of the server session.", CLOUDCODE_SERVICE_NAME));
 		} finally {
 			this.generation++;
 			if (this.origin === origin) {
@@ -267,7 +268,7 @@ export class CloudCodeService extends Disposable implements ICloudCodeService {
 		await this.initialize();
 		const value = await this.authorizedJson('/models', 'GET', undefined, this.lifetime.token);
 		if (!isRecord(value) || !Array.isArray(value.data)) {
-			throw new Error(localize('cloudcode.invalidModels', "CloudCompute could not load the available models."));
+			throw new Error(localize('cloudcode.invalidModels', "{0} could not load the available models.", CLOUDCODE_SERVICE_NAME));
 		}
 		return value.data.filter((model: unknown): model is { id: string; name?: string; architecture?: { input_modalities?: string[] } } => isRecord(model) && typeof model.id === 'string' && model.id.length > 0 && model.id.length <= 200)
 			.map(model => ({
@@ -284,7 +285,7 @@ export class CloudCodeService extends Disposable implements ICloudCodeService {
 		if (!model || model.length > 200 || messages.length === 0 || messages.length > CLOUDCODE_MAX_MESSAGES
 			|| messages.some(message => !['user', 'assistant'].includes(message.role) || typeof message.content !== 'string' || message.content.length > CLOUDCODE_MAX_MESSAGE_LENGTH)
 			|| messages.reduce((size, message) => size + Buffer.byteLength(message.content, 'utf8'), 0) > CLOUDCODE_MAX_CONTEXT_BYTES) {
-			throw new Error(localize('cloudcode.conversationLimit', "This conversation exceeds the CloudCode limit. Start a new chat or use a shorter message."));
+			throw new Error(localize('cloudcode.conversationLimit', "This conversation exceeds the {0} limit. Start a new chat or use a shorter message.", CLOUDCODE_PRODUCT_NAME));
 		}
 		const images = messages.flatMap(message => message.images ?? []);
 		if (messages.some(message => message.images !== undefined && (!Array.isArray(message.images) || message.role !== 'user'))
@@ -499,14 +500,14 @@ export class CloudCodeService extends Disposable implements ICloudCodeService {
 		await this.readStream(context, data => {
 			bytes += data.byteLength;
 			if (bytes > 1024 * 1024) {
-				throw new Error(localize('cloudcode.responseTooLarge', "The server response exceeded the CloudCode limit."));
+				throw new Error(localize('cloudcode.responseTooLarge', "The server response exceeded the {0} limit.", CLOUDCODE_PRODUCT_NAME));
 			}
 			chunks.push(data);
 		}, token);
 		try {
 			return JSON.parse(VSBuffer.concat(chunks).toString());
 		} catch {
-			throw new Error(localize('cloudcode.invalidServerResponse', "CloudCompute returned an invalid response. Please try again."));
+			throw new Error(localize('cloudcode.invalidServerResponse', "{0} returned an invalid response. Please try again.", CLOUDCODE_SERVICE_NAME));
 		}
 	}
 

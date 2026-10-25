@@ -5,6 +5,7 @@
 
 import { ICloudCodeImage } from './cloudCodeImages.js';
 import { ICloudCodeAgentDiagnostic } from './cloudCodeDiagnostics.js';
+import { CLOUDCODE_BRAND_SERVER, CLOUDCODE_PRODUCT_NAME } from './cloudCodeBrand.js';
 import { localize } from '../../../nls.js';
 import { Event } from '../../../base/common/event.js';
 import { createDecorator } from '../../instantiation/common/instantiation.js';
@@ -12,7 +13,7 @@ import { createDecorator } from '../../instantiation/common/instantiation.js';
 export const ICloudCodeService = createDecorator<ICloudCodeService>('cloudCodeService');
 export const CLOUDCODE_CHANNEL = 'cloudCode';
 export const CLOUDCODE_SERVER_SETTING = 'cloudcode.serverUrl';
-export const CLOUDCODE_DEFAULT_SERVER = 'https://app.cloudcompute.ru';
+export const CLOUDCODE_DEFAULT_SERVER = CLOUDCODE_BRAND_SERVER;
 export const CLOUDCODE_MAX_MESSAGES = 32;
 export const CLOUDCODE_MAX_MESSAGE_LENGTH = 32768;
 export const CLOUDCODE_MAX_CONTEXT_BYTES = 65536;
@@ -100,7 +101,7 @@ export function cloudCodeOrigin(value: string): string {
 	const url = new URL(value);
 	const loopback = url.hostname === '127.0.0.1' || url.hostname === '[::1]' || url.hostname === 'localhost';
 	if ((url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) || url.username || url.password || url.search || url.hash || url.pathname !== '/') {
-		throw new Error(localize('cloudcode.serverUrlInvalid', "The CloudCode server must be an HTTPS origin. HTTP is supported only for local development."));
+		throw new Error(localize('cloudcode.serverUrlInvalid', "The {0} server must be an HTTPS origin. HTTP is supported only for local development.", CLOUDCODE_PRODUCT_NAME));
 	}
 	return url.origin;
 }

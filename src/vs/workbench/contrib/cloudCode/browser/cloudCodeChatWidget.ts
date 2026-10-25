@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { CLOUDCODE_PRODUCT_NAME, CLOUDCODE_SERVICE_NAME } from '../../../../platform/cloudCode/common/cloudCodeBrand.js';
 import './media/cloudCodeChat.css';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { renderIcon } from '../../../../base/browser/ui/iconLabel/iconLabels.js';
@@ -176,7 +177,7 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 		const progress = dom.append(composer, dom.$('.cloudcode-chat-progress'));
 		this.progressBar = this._register(new ProgressBar(progress, {
 			...defaultProgressBarStyles,
-			ariaLabel: localize('cloudcode.progress', "CloudCode response in progress")
+			ariaLabel: localize('cloudcode.progress', "{0} response in progress", CLOUDCODE_PRODUCT_NAME)
 		}));
 
 		this.prompt = this._register(new CloudCodeComposer(input));
@@ -323,7 +324,7 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 		this.modeButton.element.setAttribute('aria-label', localize('cloudcode.chooseMode', "Choose Chat Mode: {0}", this.modeButton.label));
 		this.prompt.placeholder = mode === 'edit'
 			? localize('cloudcode.editPromptPlaceholder', "Describe changes to attached files…")
-			: mode === 'agent' ? localize('cloudcode.agentPromptPlaceholder', "Ask about your project or describe a change…") : localize('cloudcode.promptPlaceholder', "Ask CloudCode…");
+			: mode === 'agent' ? localize('cloudcode.agentPromptPlaceholder', "Ask about your project or describe a change…") : localize('cloudcode.promptPlaceholder', "Ask {0}…", CLOUDCODE_PRODUCT_NAME);
 		this.updateControls();
 	}
 
@@ -517,19 +518,19 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 			? localize('cloudcode.account', "{0} · {1}", account.user.name, account.team.name)
 			: state.status === 'signingIn'
 				? localize('cloudcode.signingIn', "Finish signing in in your browser…")
-				: localize('cloudcode.signedOut', "Sign in with your CloudCompute account.");
+				: localize('cloudcode.signedOut', "Sign in with your {0} account.", CLOUDCODE_SERVICE_NAME);
 		this.accountButton.label = state.status === 'signedIn'
 			? localize('cloudcode.signOut', "Sign Out")
 			: state.status === 'signingIn'
 				? localize('cloudcode.cancelSignIn', "Cancel Sign-in")
-				: localize('cloudcode.signIn', "Sign in to CloudCompute");
+				: localize('cloudcode.signIn', "Sign in to {0}", CLOUDCODE_SERVICE_NAME);
 		this.accountButton.secondary = state.status !== 'signedOut';
 		this.header.hidden = state.status === 'signedIn' && state.persisted !== false;
 		this.accountLabel.hidden = state.status === 'signedIn';
 		this.accountButton.element.hidden = state.status === 'signedIn';
 		this.modelPicker.hidden = state.status !== 'signedIn';
 		this.sessionHint.hidden = state.status !== 'signedIn' || state.persisted !== false;
-		this.sessionHint.textContent = localize('cloudcode.sessionNotSaved', "This session could not be saved securely. Sign in again after restarting CloudCode.");
+		this.sessionHint.textContent = localize('cloudcode.sessionNotSaved', "This session could not be saved securely. Sign in again after restarting {0}.", CLOUDCODE_PRODUCT_NAME);
 		this.updateControls();
 	}
 
@@ -555,7 +556,7 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 			row.classList.toggle('user', message.role === 'user');
 			dom.append(row, dom.$('h3')).textContent = message.role === 'user'
 				? localize('cloudcode.user', "You")
-				: localize('cloudcode.assistant', "CloudCode");
+				: localize('cloudcode.assistant', "{0}", CLOUDCODE_PRODUCT_NAME);
 			for (const attachment of message.attachments ?? []) {
 				this.renderAttachment(row, attachment);
 			}
@@ -660,7 +661,7 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 		this.connectionHint.hidden = status !== 'disconnected';
 		this.connectionHint.textContent = this.state.status === 'signedIn'
 			? localize('cloudcode.modelNeeded', "A chat model must be available before you can send a message.")
-			: localize('cloudcode.signInNeeded', "Sign in to send messages using your CloudCompute balance.");
+			: localize('cloudcode.signInNeeded', "Sign in to send messages using your {0} balance.", CLOUDCODE_SERVICE_NAME);
 		if (status === 'running') {
 			this.progressBar.infinite().show();
 		} else {

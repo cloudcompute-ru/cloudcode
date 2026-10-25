@@ -2,6 +2,10 @@
 
 CloudCode opens CloudCompute's existing browser login, requests consent for the selected team, and streams chat responses in **View → CloudCode Chat**. Users do not copy API keys or client secrets into the editor. Chat supports explicitly attached text files, screenshots and selections, automatic project exploration in Agent mode, and proposed edits with native diff review and Accept/Reject controls.
 
+## AtmosCode distribution
+
+Select AtmosCode with `npm run cloudcode:brand -- --brand atmoscode` before compiling or launching. This selects AtmosCompute branding and the default `https://app.atmoscompute.com` backend. `npm run cloudcode:brand -- --brand cloudcompute` restores the existing CloudCode profile. The Windows wrapper also accepts `--brand atmoscode`; see the Windows build guide for artifact names and separate installation identities.
+
 ## Backend setup
 
 Deploy the matching change in `nomadicsoft/app-cloudcompute-ru` first. Follow that repository's normal deployment and migrations; Passport tables and signing keys must already exist. Then run once per deployment:

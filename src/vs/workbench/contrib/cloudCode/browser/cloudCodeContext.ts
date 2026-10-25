@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { CLOUDCODE_PRODUCT_NAME } from '../../../../platform/cloudCode/common/cloudCodeBrand.js';
 import { encodeBase64, VSBuffer } from '../../../../base/common/buffer.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { basename, extname, relativePath } from '../../../../base/common/resources.js';
@@ -66,7 +67,7 @@ export class CloudCodeContext {
 		}
 
 		const resources = await this.fileDialogService.showOpenDialog({
-			title: localize('cloudCode.context.pickFiles', "Attach Files to CloudCode Chat"),
+			title: localize('cloudCode.context.pickFiles', "Attach Files to {0} Chat", CLOUDCODE_PRODUCT_NAME),
 			openLabel: localize('cloudCode.context.attach', "Attach"),
 			canSelectFiles: true,
 			canSelectFolders: false,

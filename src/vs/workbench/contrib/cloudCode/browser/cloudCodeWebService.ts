@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { CLOUDCODE_PRODUCT_NAME } from '../../../../platform/cloudCode/common/cloudCodeBrand.js';
 import { Event } from '../../../../base/common/event.js';
 import { localize } from '../../../../nls.js';
 import { ICloudCodeService, ICloudCodeState } from '../../../../platform/cloudCode/common/cloudCode.js';
@@ -15,7 +16,7 @@ class CloudCodeWebService implements ICloudCodeService {
 	readonly onDidReceiveChatDelta = Event.None;
 
 	async getState(): Promise<ICloudCodeState> { return { status: 'signedOut' }; }
-	async signIn(): Promise<never> { throw new Error(localize('cloudcode.desktopRequired', "Open the CloudCode desktop app to sign in and chat.")); }
+	async signIn(): Promise<never> { throw new Error(localize('cloudcode.desktopRequired', "Open the {0} desktop app to sign in and chat.", CLOUDCODE_PRODUCT_NAME)); }
 	async cancelSignIn(): Promise<void> { }
 	async signOut(): Promise<void> { }
 	async getModels(): Promise<never> { return this.signIn(); }
@@ -29,7 +30,7 @@ registerSingleton(ICloudCodeService, CloudCodeWebService, InstantiationType.Dela
 
 class CloudCodeWebCommandService implements ICloudCodeCommandService {
 	declare readonly _serviceBrand: undefined;
-	async run(): Promise<never> { throw new Error(localize('cloudcode.commandsDesktopRequired', "Open a local project in the CloudCode desktop app to run commands.")); }
+	async run(): Promise<never> { throw new Error(localize('cloudcode.commandsDesktopRequired', "Open a local project in the {0} desktop app to run commands.", CLOUDCODE_PRODUCT_NAME)); }
 	async cancel(): Promise<void> { }
 }
 

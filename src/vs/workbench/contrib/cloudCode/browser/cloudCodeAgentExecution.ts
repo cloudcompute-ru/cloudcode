@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { CLOUDCODE_PRODUCT_NAME } from '../../../../platform/cloudCode/common/cloudCodeBrand.js';
 import { raceCancellationError } from '../../../../base/common/async.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { CancellationError, isCancellationError } from '../../../../base/common/errors.js';
@@ -133,7 +134,7 @@ export class CloudCodeAgentExecutionSession extends Disposable implements ICloud
 			this.activeRequest = undefined;
 			this.cancelling = undefined;
 			if (!result || !cancelledSafely || result.failure === 'termination_failed') {
-				const failure = new CloudCodeAgentExecutionError(localize('cloudCode.execution.terminationFailed', "CloudCode could not confirm that the command stopped. Check for running processes and restart CloudCode before retrying."), true);
+				const failure = new CloudCodeAgentExecutionError(localize('cloudCode.execution.terminationFailed', "{0} could not confirm that the command stopped. Check for running processes and restart {0} before retrying.", CLOUDCODE_PRODUCT_NAME), true);
 				this.appendOutput(failure.message + '\n');
 				this.revoke();
 				throw failure;
@@ -147,7 +148,7 @@ export class CloudCodeAgentExecutionSession extends Disposable implements ICloud
 				throw new CloudCodeAgentExecutionError(localize('cloudCode.execution.launchFailed', "The command could not start. Check the command, working directory, and installed tools before retrying."));
 			}
 			if (result.failure === 'background_processes') {
-				throw new CloudCodeAgentExecutionError(localize('cloudCode.execution.backgroundProcesses', "The command left background processes running, so CloudCode stopped them. Use a foreground command that exits when its work is complete."));
+				throw new CloudCodeAgentExecutionError(localize('cloudCode.execution.backgroundProcesses', "The command left background processes running, so {0} stopped them. Use a foreground command that exits when its work is complete.", CLOUDCODE_PRODUCT_NAME));
 			}
 			this.check(cancellation.token);
 			return result;
@@ -295,7 +296,7 @@ export class CloudCodeAgentExecutionSession extends Disposable implements ICloud
 				if (isCancellationError(error)) { throw error; }
 				// Deleted files remain orphaned; the next editing adapter will reject their missing baseline.
 				if (!(error instanceof FileOperationError) || error.fileOperationResult !== FileOperationResult.FILE_NOT_FOUND) {
-					throw new CloudCodeAgentExecutionError(localize('cloudCode.execution.reloadFailed', "CloudCode could not refresh the files changed by the command. Reload the project before continuing so the Agent does not use stale contents."), true);
+					throw new CloudCodeAgentExecutionError(localize('cloudCode.execution.reloadFailed', "{0} could not refresh the files changed by the command. Reload the project before continuing so the Agent does not use stale contents.", CLOUDCODE_PRODUCT_NAME), true);
 				}
 			}
 			this.check(token);
@@ -304,9 +305,9 @@ export class CloudCodeAgentExecutionSession extends Disposable implements ICloud
 
 	private confirmationDetail(command: ICloudCodeAgentCommand, cwd: URI, changes: readonly ICloudCodeSessionChange[]): string {
 		const files = changes.map(change => change.kind === 'create' ? change.after.path : change.kind === 'rename' ? `${change.before.path} → ${change.after.path}` : change.before.path).join('\n');
-		return localize('cloudCode.execution.detail', "Command:\n{0}\n\nDirectory:\n{1}\n\nPurpose:\n{2}\n\n{3}\n\nThe command runs with your computer's permissions. Its output will be sent to the selected model. Undo Checkpoint only restores CloudCode edits; it does not reverse other changes made by commands.",
+		return localize('cloudCode.execution.detail', "Command:\n{0}\n\nDirectory:\n{1}\n\nPurpose:\n{2}\n\n{3}\n\nThe command runs with your computer's permissions. Its output will be sent to the selected model. Undo Checkpoint only restores {4} edits; it does not reverse other changes made by commands.",
 			command.command, cwd.fsPath, command.explanation,
-			changes.length ? localize('cloudCode.execution.files', "Apply and save these files, including any existing unsaved changes in them:\n{0}", files) : localize('cloudCode.execution.noEdits', "There are no staged edits to apply."));
+			changes.length ? localize('cloudCode.execution.files', "Apply and save these files, including any existing unsaved changes in them:\n{0}", files) : localize('cloudCode.execution.noEdits', "There are no staged edits to apply."), CLOUDCODE_PRODUCT_NAME);
 	}
 
 	private changedError(): CloudCodeAgentExecutionError {

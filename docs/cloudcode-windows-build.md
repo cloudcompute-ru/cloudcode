@@ -10,6 +10,30 @@ Run these commands on Windows x64 from the repository root, for example `C:\code
 
 Use Developer PowerShell for VS 2022. Inno Setup is already included as an npm dependency; a separate installation is unnecessary.
 
+## Choose the product
+
+CloudCompute remains the default. To build AtmosCode for AtmosCompute, use:
+
+```powershell
+.\scripts\build-cloudcode-win32.bat --brand atmoscode --zip
+```
+
+AtmosCode has separate installer IDs, application/profile folders, URL protocol and macOS bundle ID. Its default account server is `https://app.atmoscompute.com`; sign-in labels and chat UI use AtmosCode/AtmosCompute. The current cloud icon is shared by the product family. No OAuth client secret is embedded in either build.
+
+The explicit legacy command is `scripts\build-cloudcode-win32.bat --brand cloudcompute --zip`. Switching back restores the existing CloudCode identities. Brand selection updates `product.json` in the checkout; review this generated selection before committing unrelated work. Use separate checkout parent folders for concurrent builds because upstream packaging writes to a sibling `VSCode-win32-x64` directory.
+
+AtmosCode outputs `.build\AtmosCodeSetup-x64.exe` and, with `--zip`, `.build\AtmosCode-win-x64.zip`, with SHA-256 files. Its packaged executable is `AtmosCode.exe`. On the EN marketing deployment, set `CLOUDCODE_DOWNLOAD_WINDOWS_URL` to the published AtmosCode installer URL; the legacy automatic filename remains `CloudCodeSetup-x64.exe`.
+
+For macOS/Linux or development launches, select the profile before running the existing platform tasks:
+
+```sh
+npm run cloudcode:brand -- --brand atmoscode
+# Return to CloudCompute:
+npm run cloudcode:brand -- --brand cloudcompute
+```
+
+The Windows CI workflow builds and checks both profiles. Native packaging, code signing and publishing remain separate from selecting the brand.
+
 ## One-command build
 
 After pulling the desired changes, run this from Developer PowerShell or Developer Command Prompt for VS 2022:
