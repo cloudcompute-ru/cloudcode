@@ -67,21 +67,27 @@ suite('CloudCodeContext', () => {
 		context = new CloudCodeContext(
 			upcastPartial<IEditorService>({ get activeTextEditorControl() { return activeControl; } }),
 			upcastPartial<IModelService>({ getModel: uri => models.get(uri.toString()) ?? null }),
-			upcastPartial<ITextFileService>({ read: async (uri, options) => {
-				reads.push({ resource: uri, options });
-				if (readError) {
-					throw readError;
+			upcastPartial<ITextFileService>({
+				read: async (uri, options) => {
+					reads.push({ resource: uri, options });
+					if (readError) {
+						throw readError;
+					}
+					return readResult ?? upcastPartial<ITextFileContent>({ value: diskContent });
 				}
-				return readResult ?? upcastPartial<ITextFileContent>({ value: diskContent });
-			} }),
-			upcastPartial<IFileService>({ readFile: async () => upcastPartial<IFileContent>({ value: VSBuffer.wrap(decodeBase64('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aM1sAAAAASUVORK5CYII=').buffer) }), stat: async uri => {
-				stats.push(uri);
-				return upcastPartial<IFileStatWithPartialMetadata>({ isFile: diskIsFile, size: diskSize });
-			} }),
-			upcastPartial<IFileDialogService>({ showOpenDialog: async () => {
-				dialogCalls++;
-				return pickedFiles;
-			} }),
+			}),
+			upcastPartial<IFileService>({
+				readFile: async () => upcastPartial<IFileContent>({ value: VSBuffer.wrap(decodeBase64('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aM1sAAAAASUVORK5CYII=').buffer) }), stat: async uri => {
+					stats.push(uri);
+					return upcastPartial<IFileStatWithPartialMetadata>({ isFile: diskIsFile, size: diskSize });
+				}
+			}),
+			upcastPartial<IFileDialogService>({
+				showOpenDialog: async () => {
+					dialogCalls++;
+					return pickedFiles;
+				}
+			}),
 			upcastPartial<IWorkspaceContextService>({
 				getWorkspaceFolder: uri => isEqualOrParent(uri, folder.uri) ? folder : null,
 				getWorkspace: () => upcastPartial<IWorkspace>({ folders: [folder] }),
@@ -126,10 +132,13 @@ suite('CloudCodeContext', () => {
 	test('attaches a small selection from a large buffer with accurate line metadata', async () => {
 		openModel(`first\nselected\n${'x'.repeat(CLOUDCODE_MAX_ATTACHMENT_BYTES)}`);
 		selection = new Selection(2, 1, 3, 1);
-		assert.deepStrictEqual(await context.readAttachments('selection'), [{
+		const captured = context.captureSelection();
+		assert.deepStrictEqual(await context.readAttachments('selection'), [captured]);
+		assert.deepStrictEqual(context.captureRange(selection), captured);
+		assert.deepStrictEqual(captured, {
 			id: `${resource.toString()}#2:1-3:1`, resource: resource.toString(), label: 'src/example.ts:2-2', content: 'selected\n', languageId: 'typescript', startLine: 2, endLine: 2,
 			range: { startLineNumber: 2, startColumn: 1, endLineNumber: 3, endColumn: 1 },
-		}]);
+		});
 	});
 
 	test('rejects missing editors and empty selections', async () => {
@@ -143,6 +152,8 @@ suite('CloudCodeContext', () => {
 		activeControl = upcastPartial<IDiffEditor>({ getEditorType: () => EditorType.IDiffEditor });
 		await assert.rejects(context.readAttachments('file'), /regular text editor/);
 		await assert.rejects(context.readAttachments('selection'), /regular text editor/);
+		assert.throws(() => context.captureSelection(), /regular text editor/);
+		assert.throws(() => context.captureRange(new Selection(1, 1, 1, 2)), /regular text editor/);
 		assert.deepStrictEqual(reads, []);
 	});
 

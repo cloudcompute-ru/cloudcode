@@ -596,6 +596,17 @@ export function registerAPICommands(extension: GitExtensionImpl): Disposable {
 		};
 	}));
 
+	disposables.push(commands.registerCommand('git.api.getStagedDiff', async (uri: string) => {
+		const api = extension.getAPI(1);
+		const repository = api.getRepository(Uri.parse(uri));
+
+		if (!repository) {
+			return null;
+		}
+
+		return repository.diff(true);
+	}));
+
 	disposables.push(commands.registerCommand('git.api.getRemoteSources', (opts?: PickRemoteSourceOptions) => {
 		return commands.executeCommand('git-base.api.getRemoteSources', opts);
 	}));

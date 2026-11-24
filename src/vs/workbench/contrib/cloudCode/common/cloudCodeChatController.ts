@@ -15,7 +15,7 @@ import { localize } from '../../../../nls.js';
 import { CLOUDCODE_MAX_CONTEXT_BYTES, CLOUDCODE_MAX_MESSAGE_LENGTH, CLOUDCODE_MAX_MESSAGES, ICloudCodeMessage, ICloudCodeModel, ICloudCodeService, ICloudCodeState } from '../../../../platform/cloudCode/common/cloudCode.js';
 import { cloudCodeUserMessage, formatCloudCodePrompt, ICloudCodeAttachment, ICloudCodeContextProvider, mergeCloudCodeAttachments } from './cloudCodeChatContext.js';
 import { ICloudCodeChatMessage, ICloudCodeChatView } from './cloudCodeChat.js';
-import { ICloudCodeAgent } from './cloudCodeAgent.js';
+import { CloudCodeAgentWorkspaceError, ICloudCodeAgent } from './cloudCodeAgent.js';
 import { CloudCodeChatMode, formatCloudCodeEditPrompt, ICloudCodeEditProposal, ICloudCodeEditProvider, ICloudCodeEditTarget, parseCloudCodeEdits } from './cloudCodeEdits.js';
 import { CloudCodeEditingSessionAction, ICloudCodeEditingSession } from './cloudCodeEditingSession.js';
 
@@ -25,6 +25,7 @@ export class CloudCodeChatController extends Disposable {
 	private state: ICloudCodeState = { status: 'signedOut' };
 	private revision = 0;
 	private modelRequest = 0;
+	private modelLoad: Promise<void> = Promise.resolve();
 	private models: readonly ICloudCodeModel[] = [];
 	private selectedModel: string | undefined;
 	private loadingModels = false;
@@ -39,7 +40,7 @@ export class CloudCodeChatController extends Disposable {
 	private editBusy = false;
 	private editRevision = 0;
 	private readonly editingSessions = new Map<string, { session: ICloudCodeEditingSession; title: string; checkpoint: boolean; error?: string }>();
-	private activeRequest: { id: string; message: ICloudCodeMessage; text: string; hasAttachments: boolean; targets?: readonly ICloudCodeEditTarget[] } | undefined;
+	private activeRequest: { id: string; message: ICloudCodeMessage; text: string; hasAttachments: boolean; targets?: readonly ICloudCodeEditTarget[]; silent?: boolean; stopped?: boolean } | undefined;
 	private activeAgent: { source: CancellationTokenSource; completion: Promise<void>; conversation: number; activity: string[] } | undefined;
 	private agentConversation = 0;
 	private disposed = false;
@@ -64,9 +65,9 @@ export class CloudCodeChatController extends Disposable {
 			this.applyState(state);
 		}));
 		this._register(service.onDidReceiveChatDelta(delta => {
-			if (this.activeRequest?.id === delta.requestId) {
+			if (this.activeRequest?.id === delta.requestId && !this.activeRequest.stopped) {
 				this.activeRequest.text += delta.text;
-				if (!this.activeRequest.targets) {
+				if (!this.activeRequest.silent && !this.activeRequest.targets) {
 					this.view.appendResponse(delta.text);
 				}
 			}
@@ -213,10 +214,14 @@ export class CloudCodeChatController extends Disposable {
 		}
 	}
 
-	private async loadModels(): Promise<void> {
+	private loadModels(): void {
 		if (this.disposed || this.state.status !== 'signedIn' || this.loadingModels || this.editBusy || this.running) {
 			return;
 		}
+		this.modelLoad = this.loadModelsNow();
+	}
+
+	private async loadModelsNow(): Promise<void> {
 		const request = ++this.modelRequest;
 		this.loadingModels = true;
 		this.view.setError(undefined);
@@ -285,6 +290,71 @@ export class CloudCodeChatController extends Disposable {
 				this.loadingAttachments = false;
 				this.view.setAttachments(this.attachments, false);
 			}
+		}
+	}
+
+	/** Sends one attached selection through the existing Ask or Propose Edits path. */
+	async runSelectionAction(mode: 'ask' | 'edit', prompt: string, attachments: readonly ICloudCodeAttachment[]): Promise<void> {
+		try {
+			await this.assertReadyForAction();
+		} catch (error) {
+			this.showError(error);
+			return;
+		}
+		if (attachments.some(attachment => attachment.reference)) {
+			this.view.setError(localize('cloudcode.actionNeedsSnapshot', "This action can only attach a text selection."));
+			return;
+		}
+		this.mode = mode;
+		this.view.setEditMode(this.mode);
+		this.attachments = attachments;
+		this.view.setAttachments(this.attachments, false);
+		await this.submit(prompt);
+	}
+
+	/** One user message with no transcript, history, or attachments. Stop cancels it without a chat bubble. */
+	async completeOnce(prompt: string): Promise<string> {
+		await this.assertReadyForAction();
+		if (prompt.length > CLOUDCODE_MAX_MESSAGE_LENGTH) {
+			throw new Error(localize('cloudcode.messageTooLong', "This message is too long. Shorten it before sending."));
+		}
+		const model = this.selectedModel;
+		if (!model) {
+			throw new Error(localize('cloudcode.noModels', "No chat models are available for this account. Retry after a model becomes available."));
+		}
+		const message: ICloudCodeMessage = { role: 'user', content: prompt };
+		const request = { id: generateUuid(), message, text: '', hasAttachments: false, silent: true };
+		this.activeRequest = request;
+		this.updateStatus();
+		try {
+			const result = await this.service.streamChat(request.id, model, [message]);
+			if (this.disposed || request.stopped || this.activeRequest !== request || result.cancelled) {
+				throw new CancellationError();
+			}
+			return request.text.trim();
+		} finally {
+			if (this.activeRequest === request) {
+				this.activeRequest = undefined;
+			}
+			if (!this.disposed) {
+				this.updateStatus();
+			}
+		}
+	}
+
+	private async assertReadyForAction(): Promise<void> {
+		await this.modelLoad;
+		if (this.disposed) {
+			throw new Error(localize('cloudcode.unexpectedError', "{0} could not complete this action. Please try again.", CLOUDCODE_PRODUCT_NAME));
+		}
+		if (this.state.status !== 'signedIn') {
+			throw new Error(localize('cloudcode.actionNeedsSignIn', "Sign in before using this action."));
+		}
+		if (this.running || this.editBusy || this.loadingAttachments || this.hasPendingEdits() || this.loadingModels) {
+			throw new Error(localize('cloudcode.actionBusy', "Wait for the current reply or review pending changes first."));
+		}
+		if (!this.selectedModel) {
+			throw new Error(localize('cloudcode.noModels', "No chat models are available for this account. Retry after a model becomes available."));
 		}
 	}
 
@@ -476,7 +546,7 @@ export class CloudCodeChatController extends Disposable {
 					const stopped = request.source.token.isCancellationRequested || isCancellationError(error);
 					this.messages[responseIndex] = {
 						role: 'assistant',
-						text: stopped ? localize('cloudcode.agentStopped', "Agent stopped. No changes were applied.") : localize('cloudcode.agentFailed', "Agent could not complete this task. No changes were applied."),
+						text: stopped ? localize('cloudcode.agentStopped', "Agent stopped. No changes were applied.") : error instanceof CloudCodeAgentWorkspaceError ? error.message : localize('cloudcode.agentFailed', "Agent could not complete this task. No changes were applied."),
 						incomplete: true,
 						activity: [...request.activity]
 					};
@@ -536,6 +606,9 @@ export class CloudCodeChatController extends Disposable {
 	private finishResponse(incomplete: boolean): void {
 		const request = this.activeRequest;
 		if (!request) {
+			return;
+		}
+		if (request.silent) {
 			return;
 		}
 		let responseText = request.text;
@@ -704,9 +777,11 @@ export class CloudCodeChatController extends Disposable {
 				error: undefined
 			});
 			if (action !== 'preview') {
-				this.messages.push({ role: 'assistant', text: action === 'accept'
-					? localize('cloudcode.editAcceptedFile', "Applied the proposed change to {0} in the editor. It can be undone with Undo. Read the file again before making further changes.", proposal.target.attachment.label)
-					: localize('cloudcode.editRejectedFile', "Rejected the proposed change to {0}. This proposal was not applied.", proposal.target.attachment.label) });
+				this.messages.push({
+					role: 'assistant', text: action === 'accept'
+						? localize('cloudcode.editAcceptedFile', "Applied the proposed change to {0} in the editor. It can be undone with Undo. Read the file again before making further changes.", proposal.target.attachment.label)
+						: localize('cloudcode.editRejectedFile', "Rejected the proposed change to {0}. This proposal was not applied.", proposal.target.attachment.label)
+				});
 				// Retain the discussion and review outcome without replaying stale source snapshots.
 				this.history = this.agentHistory();
 				this.historyHasAttachments = false;
@@ -747,6 +822,9 @@ export class CloudCodeChatController extends Disposable {
 		const request = this.activeRequest;
 		if (request) {
 			// Ignore subsequent deltas immediately, even while native cancellation is in flight.
+			if (request.silent) {
+				request.stopped = true;
+			}
 			this.finishResponse(true);
 			const conversationId = this.conversationId;
 			void this.service.cancelChat(request.id).catch(error => { if (this.conversationId === conversationId) { this.showError(error); } });
@@ -822,7 +900,7 @@ export class CloudCodeChatController extends Disposable {
 	private snapshotConversation(): ICloudCodeConversation {
 		const title = this.messages.find(message => message.role === 'user')?.text.replace(/\s+/g, ' ').trim().slice(0, 80)
 			|| this.view.getDraft().replace(/\s+/g, ' ').trim().slice(0, 80) || localize('cloudcode.newChat', "New Chat");
-		const unfinished = !!this.activeRequest || !!this.activeAgent && this.activeAgent.conversation === this.agentConversation && !this.activeAgent.source.token.isCancellationRequested;
+		const unfinished = !!this.activeRequest && !this.activeRequest.silent || !!this.activeAgent && this.activeAgent.conversation === this.agentConversation && !this.activeAgent.source.token.isCancellationRequested;
 		const messages = this.messages.map((message, index) => {
 			const { progress, ...rest } = message;
 			return progress !== undefined || unfinished && index === this.messages.length - 1 ? { ...rest, text: this.activeRequest?.text || localize('cloudcode.interruptedChat', "This request was interrupted."), incomplete: true } : rest;
