@@ -23,6 +23,7 @@ import { registerIcon } from '../../../../platform/theme/common/iconRegistry.js'
 import { ViewPaneContainer } from '../../../browser/parts/views/viewPaneContainer.js';
 import { Extensions, IViewContainersRegistry, IViewsRegistry, ViewContainerLocation } from '../../../common/views.js';
 import { CloudCodeChatViewPane } from './cloudCodeChatViewPane.js';
+import './cloudCodeSelectionActions.js';
 import { CLOUDCODE_ERROR_REPORTING_SETTING } from '../../../../platform/cloudCode/common/cloudCodeDiagnostics.js';
 import { Extensions as OutputExtensions, IOutputChannelRegistry } from '../../../services/output/common/output.js';
 import { CLOUDCODE_COMMAND_OUTPUT_CHANNEL } from '../common/cloudCodeAgentExecution.js';

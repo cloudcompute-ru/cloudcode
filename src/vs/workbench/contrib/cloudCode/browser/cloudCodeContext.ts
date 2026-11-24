@@ -8,7 +8,7 @@ import { encodeBase64, VSBuffer } from '../../../../base/common/buffer.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { basename, extname, relativePath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
-import { getCodeEditor, isDiffEditor } from '../../../../editor/browser/editorBrowser.js';
+import { getCodeEditor, ICodeEditor, isDiffEditor } from '../../../../editor/browser/editorBrowser.js';
 import { IRange } from '../../../../editor/common/core/range.js';
 import { ITextModel } from '../../../../editor/common/model.js';
 import { IModelService } from '../../../../editor/common/services/model.js';
@@ -47,23 +47,10 @@ export class CloudCodeContext {
 	async readAttachments(kind: CloudCodeAttachmentKind): Promise<readonly ICloudCodeAttachment[]> {
 		this.assertWorkspaceTrusted();
 		if (kind !== 'files') {
-			const control = this.editorService.activeTextEditorControl;
-			if (isDiffEditor(control)) {
-				throw new Error(localize('cloudCode.context.diffEditor', "Open the file in a regular text editor before attaching it or its selection."));
-			}
-			const editor = getCodeEditor(control);
-			const model = editor?.getModel();
-			if (!model) {
-				throw new Error(localize('cloudCode.context.noEditor', "Open a text file before attaching it to the chat."));
-			}
 			if (kind === 'selection') {
-				const selection = editor?.getSelection();
-				if (!selection || selection.isEmpty()) {
-					throw new Error(localize('cloudCode.context.noSelection', "Select some code in the editor first."));
-				}
-				return [this.snapshotModel(model, selection)];
+				return [this.captureSelection()];
 			}
-			return [this.snapshotModel(model)];
+			return [this.snapshotModel(this.requireEditorModel().model)];
 		}
 
 		const resources = await this.fileDialogService.showOpenDialog({
@@ -93,6 +80,21 @@ export class CloudCodeContext {
 			attachments = mergeCloudCodeAttachments(attachments, [await this.readFile(resource)]);
 		}
 		return attachments;
+	}
+
+	/** The active editor selection, using the same trust and snapshot checks as an attachment. */
+	captureSelection(): ICloudCodeAttachment {
+		const { editor, model } = this.requireEditorModel();
+		const selection = editor.getSelection();
+		if (!selection || selection.isEmpty()) {
+			throw new Error(localize('cloudCode.context.noSelection', "Select some code in the editor first."));
+		}
+		return this.snapshotModel(model, selection);
+	}
+
+	/** An explicit editor range, using the same trust and snapshot checks as a selection. */
+	captureRange(range: IRange): ICloudCodeAttachment {
+		return this.snapshotModel(this.requireEditorModel().model, range);
 	}
 
 	/** Clipboard blobs have no editable resource and are never written to the workspace. */
@@ -171,6 +173,20 @@ export class CloudCodeContext {
 		}
 		this.assertContent(content, resource);
 		return { id: resource.toString(), resource: resource.toString(), label: this.resourceLabel(resource), content };
+	}
+
+	private requireEditorModel(): { editor: ICodeEditor; model: ITextModel } {
+		this.assertWorkspaceTrusted();
+		const control = this.editorService.activeTextEditorControl;
+		if (isDiffEditor(control)) {
+			throw new Error(localize('cloudCode.context.diffEditor', "Open the file in a regular text editor before attaching it or its selection."));
+		}
+		const editor = getCodeEditor(control);
+		const model = editor?.getModel();
+		if (!editor || !model) {
+			throw new Error(localize('cloudCode.context.noEditor', "Open a text file before attaching it to the chat."));
+		}
+		return { editor, model };
 	}
 
 	private snapshotModel(model: ITextModel, range?: IRange): ICloudCodeAttachment {

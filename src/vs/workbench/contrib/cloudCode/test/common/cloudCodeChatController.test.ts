@@ -6,6 +6,7 @@
 import assert from 'assert';
 import { DeferredPromise } from '../../../../../base/common/async.js';
 import { CancellationToken } from '../../../../../base/common/cancellation.js';
+import { CancellationError } from '../../../../../base/common/errors.js';
 import { Emitter } from '../../../../../base/common/event.js';
 import { Disposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
@@ -15,7 +16,7 @@ import { CloudCodeChatController } from '../../common/cloudCodeChatController.js
 import { formatCloudCodePrompt, ICloudCodeAttachment, ICloudCodeContextProvider } from '../../common/cloudCodeChatContext.js';
 import { CloudCodeChatMode, ICloudCodeEditProposal, ICloudCodeEditProvider, ICloudCodeEditTarget, ICloudCodeProposedEdit } from '../../common/cloudCodeEdits.js';
 import { ICloudCodeConversationStorage } from '../../common/cloudCodeConversations.js';
-import { ICloudCodeAgent } from '../../common/cloudCodeAgent.js';
+import { CloudCodeAgentWorkspaceError, ICloudCodeAgent } from '../../common/cloudCodeAgent.js';
 import { CloudCodeEditingSessionAction, CloudCodeEditingSessionStatus, ICloudCodeEditingSession, ICloudCodeEditingSessionView, ICloudCodeSessionChange } from '../../common/cloudCodeEditingSession.js';
 
 class TestView extends Disposable implements ICloudCodeChatView {
@@ -849,7 +850,18 @@ suite('CloudCodeChatController', () => {
 		});
 	});
 
-		test('Agent mode explores without attachments and presents progress without exposing protocol responses', async () => {
+	test('Agent workspace setup shows the reason instead of a generic failure', async () => {
+		view.changeMode.fire('agent');
+		view.submit.fire('Find the sign-in handler');
+		const reason = 'Open a project folder before using Agent mode.';
+		await agent.requests[0].result.error(new CloudCodeAgentWorkspaceError(reason));
+		await settleEdits();
+		assert.deepStrictEqual({ text: view.messages.at(-1)?.text, error: view.error, incomplete: view.messages.at(-1)?.incomplete, status: view.status }, {
+			text: reason, error: reason, incomplete: true, status: 'ready'
+		});
+	});
+
+	test('Agent mode explores without attachments and presents progress without exposing protocol responses', async () => {
 		view.changeMode.fire('agent');
 		view.submit.fire('Find the sign-in handler');
 		const request = agent.requests[0];
@@ -1309,6 +1321,124 @@ suite('CloudCodeChatController', () => {
 		view.changeMode.fire('ask');
 		view.submit.fire('Next question');
 		assert.deepStrictEqual(service.requests[0].messages, [{ role: 'user', content: 'Next question' }]);
+	});
+
+	test('runSelectionAction ask sends the selection once and keeps the answer in chat', async () => {
+		const attachment: ICloudCodeAttachment = {
+			id: 'file:///project/main.ts#1:1-1:20',
+			resource: 'file:///project/main.ts',
+			label: 'main.ts:1-1',
+			content: 'const selected = 1;',
+			languageId: 'typescript',
+			startLine: 1,
+			endLine: 1,
+			range: { startLineNumber: 1, startColumn: 1, endLineNumber: 1, endColumn: 20 }
+		};
+		const prompt = 'Explain the attached selection. Say what it does and anything that looks wrong. Do not propose a replacement.';
+		const pending = controller.runSelectionAction('ask', prompt, [attachment]);
+		await settleEdits();
+		assert.strictEqual(service.requests.length, 1);
+		assert.strictEqual(agent.requests.length, 0);
+		assert.strictEqual(service.requests[0].messages.length, 1);
+		assert.ok(service.requests[0].messages[0].content.includes('const selected = 1;'));
+		assert.strictEqual(view.mode, 'ask');
+		service.deltas.fire({ requestId: service.requests[0].id, text: 'It declares a constant.' });
+		await service.requests[0].result.complete({ cancelled: false });
+		await pending;
+		assert.deepStrictEqual(view.messages.map(message => ({ role: message.role, text: message.text, proposed: message.proposedEdits })), [
+			{ role: 'user', text: prompt, proposed: undefined },
+			{ role: 'assistant', text: 'It declares a constant.', proposed: undefined }
+		]);
+		assert.strictEqual(view.mode, 'ask');
+		assert.strictEqual(editProvider.applications.length, 0);
+	});
+
+	test('runSelectionAction edit prepares a pending proposal and does not apply it', async () => {
+		const pending = controller.runSelectionAction('edit', 'Rename the constant', [editableAttachment]);
+		await settleEdits();
+		assert.deepStrictEqual(editProvider.prepared, [[editableAttachment]]);
+		assert.strictEqual(view.mode, 'edit');
+		assert.strictEqual(agent.requests.length, 0);
+		const request = service.requests[0];
+		assert.ok(request.messages[0].content.includes(editableAttachment.content));
+		service.deltas.fire({ requestId: request.id, text: JSON.stringify({ edits: [{ attachment: 1, replacement: 'const renamed = 1;' }] }) });
+		await request.result.complete({ cancelled: false });
+		await pending;
+		assert.strictEqual(view.proposals.length, 1);
+		assert.strictEqual(view.proposals[0].status, 'pending');
+		assert.strictEqual(view.proposals[0].replacement, 'const renamed = 1;');
+		assert.deepStrictEqual(editProvider.applications, []);
+		assert.deepStrictEqual(editProvider.previews, []);
+	});
+
+	test('runSelectionAction waits for the model list and does not start while another reply is running', async () => {
+		const running = controller.runSelectionAction('ask', 'First', [editableAttachment]);
+		await settleEdits();
+		await controller.runSelectionAction('edit', 'Second', [editableAttachment]);
+		assert.deepStrictEqual({ requests: service.requests.length, error: view.error, prepared: editProvider.prepared.length }, {
+			requests: 1, error: 'Wait for the current reply or review pending changes first.', prepared: 0
+		});
+		service.deltas.fire({ requestId: service.requests[0].id, text: 'Done' });
+		await service.requests[0].result.complete({ cancelled: false });
+		await running;
+
+		controller.dispose();
+		const models = new DeferredPromise<readonly ICloudCodeModel[]>();
+		service.modelResult = models.p;
+		controller = disposables.add(new CloudCodeChatController(view, contextProvider, editProvider, agent, undefined, service));
+		await controller.initialize();
+		const pending = controller.runSelectionAction('ask', 'Explain the selection', [editableAttachment]);
+		await settleEdits();
+		assert.strictEqual(service.requests.length, 1);
+		await models.complete([{ id: 'model', name: 'Model' }]);
+		await settleEdits();
+		assert.strictEqual(service.requests.length, 2);
+		assert.ok(service.requests[1].messages[0].content.includes(editableAttachment.content));
+		assert.strictEqual(view.mode, 'ask');
+		service.deltas.fire({ requestId: service.requests[1].id, text: 'Explained' });
+		await service.requests[1].result.complete({ cancelled: false });
+		await pending;
+	});
+
+	test('selection actions require sign-in before calling the model', async () => {
+		service.stateEmitter.fire({ status: 'signedOut' });
+		await controller.runSelectionAction('ask', 'Explain', [editableAttachment]);
+		await assert.rejects(controller.completeOnce('Write a commit message'), /Sign in before using this action/);
+		assert.deepStrictEqual({ requests: service.requests.length, error: view.error }, { requests: 0, error: 'Sign in before using this action.' });
+	});
+
+	test('completeOnce returns the streamed text and leaves the transcript empty', async () => {
+		const pending = controller.completeOnce('Write a commit message');
+		await settleEdits();
+		const request = service.requests[0];
+		assert.deepStrictEqual(request.messages, [{ role: 'user', content: 'Write a commit message' }]);
+		service.deltas.fire({ requestId: request.id, text: '  Subject line' });
+		service.deltas.fire({ requestId: request.id, text: '\n\nBody.  ' });
+		assert.deepStrictEqual(view.messages, []);
+		await request.result.complete({ cancelled: false });
+		assert.strictEqual(await pending, 'Subject line\n\nBody.');
+		assert.deepStrictEqual({ messages: view.messages, status: view.status }, { messages: [], status: 'ready' });
+		view.submit.fire('Next');
+		assert.deepStrictEqual(service.requests[1].messages, [{ role: 'user', content: 'Next' }]);
+	});
+
+	test('stopping during completeOnce does not add a chat message', async () => {
+		const pending = controller.completeOnce('Write a commit message');
+		await settleEdits();
+		const request = service.requests[0];
+		service.deltas.fire({ requestId: request.id, text: 'partial' });
+		view.stop.fire();
+		assert.deepStrictEqual(view.messages, []);
+		await request.result.complete({ cancelled: true });
+		await assert.rejects(pending, (error: Error) => error instanceof CancellationError);
+		assert.deepStrictEqual({ messages: view.messages, status: view.status, cancelled: service.cancelled }, {
+			messages: [], status: 'ready', cancelled: [request.id]
+		});
+	});
+
+	test('completeOnce rejects a prompt past the message limit', async () => {
+		await assert.rejects(controller.completeOnce('x'.repeat(CLOUDCODE_MAX_MESSAGE_LENGTH + 1)), /too long/);
+		assert.deepStrictEqual({ requests: service.requests.length, messages: view.messages }, { requests: 0, messages: [] });
 	});
 
 	test('an account switch reloads models after the cancelled Agent releases its resources', async () => {

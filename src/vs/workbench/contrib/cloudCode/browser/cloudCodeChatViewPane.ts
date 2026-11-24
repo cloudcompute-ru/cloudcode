@@ -8,6 +8,7 @@ import { toDisposable, IDisposable } from '../../../../base/common/lifecycle.js'
 import { StorageScope, StorageTarget, IStorageService } from '../../../../platform/storage/common/storage.js';
 import { size } from '../../../../base/browser/dom.js';
 import { localize } from '../../../../nls.js';
+import { IRange } from '../../../../editor/common/core/range.js';
 import { cloudCodeOrigin, CLOUDCODE_DEFAULT_SERVER, CLOUDCODE_SERVER_SETTING, ICloudCodeService } from '../../../../platform/cloudCode/common/cloudCode.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
@@ -30,7 +31,8 @@ import { CloudCodeEditingWorkspaceFactory } from './cloudCodeEditingWorkspace.js
 import { CloudCodeAgentExecutionFactory } from './cloudCodeAgentExecution.js';
 import { CloudCodeAgent } from '../common/cloudCodeAgent.js';
 import { CloudCodeChatMode } from '../common/cloudCodeEdits.js';
-import { CloudCodeAttachmentKind } from '../common/cloudCodeChatContext.js';
+import { CloudCodeAttachmentKind, ICloudCodeAttachment } from '../common/cloudCodeChatContext.js';
+import { formatCloudCodeCommitMessagePrompt, formatCloudCodeExplainSelectionPrompt, formatCloudCodeFixDiagnosticPrompt, ICloudCodeQuickDiagnostic } from '../common/cloudCodeQuickActions.js';
 import { ICloudCodeConversationStorage } from '../common/cloudCodeConversations.js';
 import { CloudCodeChatController } from '../common/cloudCodeChatController.js';
 
@@ -41,6 +43,7 @@ export class CloudCodeChatViewPane extends ViewPane {
 	private bodyContainer: HTMLElement | undefined;
 	private widget: CloudCodeChatWidget | undefined;
 	private controller: CloudCodeChatController | undefined;
+	private ready: Promise<void> = Promise.resolve();
 	private readonly context: CloudCodeContext;
 	private readonly attachmentInput: CloudCodeAttachmentInput;
 	private readonly editWorkspace: CloudCodeEditWorkspace;
@@ -115,7 +118,7 @@ export class CloudCodeChatViewPane extends ViewPane {
 				return picked ? this.context.readAttachments(picked.kind) : [];
 			}
 		}, this.editWorkspace, this.agent, this.conversationStorage, this.cloudCodeService));
-		void this.controller.initialize();
+		this.ready = this.controller.initialize();
 	}
 
 	protected override layoutBody(height: number, width: number): void {
@@ -134,6 +137,75 @@ export class CloudCodeChatViewPane extends ViewPane {
 
 	newConversation(): void {
 		this.widget?.newConversation();
+	}
+
+	async explainSelection(): Promise<void> {
+		const controller = await this.controllerReady();
+		if (!controller) {
+			return;
+		}
+		let attachment: ICloudCodeAttachment;
+		try {
+			attachment = this.context.captureSelection();
+		} catch (error) {
+			this.report(error);
+			return;
+		}
+		await controller.runSelectionAction('ask', formatCloudCodeExplainSelectionPrompt(), [attachment]);
+	}
+
+	async editSelection(instruction: string): Promise<void> {
+		if (!instruction.trim()) {
+			return;
+		}
+		const controller = await this.controllerReady();
+		if (!controller) {
+			return;
+		}
+		let attachment: ICloudCodeAttachment;
+		try {
+			attachment = this.context.captureSelection();
+		} catch (error) {
+			this.report(error);
+			return;
+		}
+		await controller.runSelectionAction('edit', instruction.trim(), [attachment]);
+	}
+
+	async fixDiagnostic(range: IRange, diagnostics: readonly ICloudCodeQuickDiagnostic[]): Promise<void> {
+		const controller = await this.controllerReady();
+		if (!controller) {
+			return;
+		}
+		let attachment: ICloudCodeAttachment;
+		try {
+			attachment = this.context.captureRange(range);
+		} catch (error) {
+			this.report(error);
+			return;
+		}
+		if (!diagnostics.length) {
+			return;
+		}
+		await controller.runSelectionAction('edit', formatCloudCodeFixDiagnosticPrompt(diagnostics), [attachment]);
+	}
+
+	async draftCommitMessage(diff: string, truncated: boolean): Promise<string> {
+		await this.ready;
+		if (!this.controller) {
+			throw new Error(localize('cloudcode.chatUnavailable', "{0} Chat is not available in this window.", CLOUDCODE_PRODUCT_NAME));
+		}
+		return this.controller.completeOnce(formatCloudCodeCommitMessagePrompt(diff, truncated));
+	}
+
+	private async controllerReady(): Promise<CloudCodeChatController | undefined> {
+		await this.ready;
+		return this.controller;
+	}
+
+	private report(error: unknown): void {
+		const message = error instanceof Error ? error.message : localize('cloudcode.unexpectedError', "{0} could not complete this action. Please try again.", CLOUDCODE_PRODUCT_NAME);
+		this.widget?.setError(message);
 	}
 
 	override focus(): void {
