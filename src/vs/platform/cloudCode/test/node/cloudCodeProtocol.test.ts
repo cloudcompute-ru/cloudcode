@@ -8,7 +8,7 @@ import { createHash } from 'crypto';
 import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { isCancellationError } from '../../../../base/common/errors.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
-import { CLOUDCODE_REDIRECT_URI, CloudCodeAgentEventStream, CloudCodeEventStream, CloudCodeLoopback, cloudCodeOrigin, createCloudCodeAgentPayload, createCloudCodeAuthorization, parseCloudCodeAuthConfiguration } from '../../node/cloudCodeProtocol.js';
+import { CLOUDCODE_REDIRECT_URI, CloudCodeAgentEventStream, CloudCodeEventStream, CloudCodeLoopback, cloudCodeOrigin, createCloudCodeAgentPayload, createCloudCodeAuthorization, parseCloudCodeAuthConfiguration, parseCloudCodeDeviceAuthorization } from '../../node/cloudCodeProtocol.js';
 import { ICloudCodeAgentMessage, ICloudCodeToolDefinition } from '../../common/cloudCode.js';
 
 suite('CloudCode protocol', () => {
@@ -46,6 +46,16 @@ suite('CloudCode protocol', () => {
 		]) {
 			assert.throws(() => parseCloudCodeAuthConfiguration({ ...configuration, ...replacement }, origin));
 		}
+	});
+
+	test('only accepts a device verification link on the configured server', () => {
+		const response = {
+			device_code: 'ab'.repeat(40), user_code: 'BCDFGHJK', verification_uri: `${origin}/cloudcode/device`,
+			interval: 5, expires_in: 600
+		};
+		assert.strictEqual(parseCloudCodeDeviceAuthorization(response, origin).userCode, 'BCDF-GHJK');
+		assert.throws(() => parseCloudCodeDeviceAuthorization({ ...response, verification_uri: 'https://another.example/cloudcode/device' }, origin));
+		assert.deepStrictEqual(parseCloudCodeAuthConfiguration({ ...configuration, device_authorization_endpoint: 'https://another.example/cloudcode/oauth/device/code' }, origin), configuration);
 	});
 
 	test('creates fresh state and an S256 challenge without exposing the verifier', () => {

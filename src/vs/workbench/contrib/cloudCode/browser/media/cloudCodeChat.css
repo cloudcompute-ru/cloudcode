@@ -33,6 +33,25 @@
 	margin-top: var(--vscode-spacing-size80);
 }
 
+.cloudcode-chat .cloudcode-chat-device-sign-in {
+	margin-top: var(--vscode-spacing-size80);
+	overflow-wrap: anywhere;
+	user-select: text;
+}
+
+.cloudcode-chat .cloudcode-chat-device-sign-in a {
+	color: var(--vscode-textLink-foreground);
+}
+
+.cloudcode-chat .cloudcode-chat-device-sign-in code {
+	display: block;
+	width: fit-content;
+	margin-top: var(--vscode-spacing-size80);
+	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size80);
+	background: var(--vscode-textCodeBlock-background);
+	font-size: var(--vscode-fontSize-body1);
+}
+
 .cloudcode-chat .cloudcode-chat-model-picker {
 	display: flex;
 	flex: 1 1 14em;

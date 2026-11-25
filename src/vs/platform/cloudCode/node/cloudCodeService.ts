@@ -6,7 +6,7 @@
 import { CLOUDCODE_PRODUCT_NAME, CLOUDCODE_SERVICE_NAME } from '../common/cloudCodeBrand.js';
 import { cloudCodeImagesWithinLimit } from '../common/cloudCodeImages.js';
 import { VSBuffer } from '../../../base/common/buffer.js';
-import { raceCancellationError, Sequencer } from '../../../base/common/async.js';
+import { raceCancellationError, Sequencer, timeout } from '../../../base/common/async.js';
 import { CancellationToken, CancellationTokenSource } from '../../../base/common/cancellation.js';
 import { canceled, isCancellationError } from '../../../base/common/errors.js';
 import { Emitter } from '../../../base/common/event.js';
@@ -22,14 +22,20 @@ import { ILogService } from '../../log/common/log.js';
 import { IProductService } from '../../product/common/productService.js';
 import { ICloudCodeAgentDiagnostic } from '../common/cloudCodeDiagnostics.js';
 import { CloudCodeDiagnostics } from './cloudCodeDiagnostics.js';
-import { CLOUDCODE_DEFAULT_SERVER, CLOUDCODE_MAX_CONTEXT_BYTES, CLOUDCODE_MAX_MESSAGES, CLOUDCODE_MAX_MESSAGE_LENGTH, CLOUDCODE_SERVER_SETTING, ICloudCodeAccount, ICloudCodeAgentMessage, ICloudCodeAgentResponse, ICloudCodeChatDelta, ICloudCodeMessage, ICloudCodeModel, ICloudCodeService, ICloudCodeState, ICloudCodeToolDefinition } from '../common/cloudCode.js';
-import { CLOUDCODE_REDIRECT_URI, CloudCodeAgentEventStream, CloudCodeEventStream, CloudCodeLoopback, cloudCodeOrigin, createCloudCodeAgentPayload, createCloudCodeAuthorization, isRecord, parseCloudCodeAuthConfiguration } from './cloudCodeProtocol.js';
+import { CLOUDCODE_DEFAULT_SERVER, CLOUDCODE_MAX_CONTEXT_BYTES, CLOUDCODE_MAX_MESSAGES, CLOUDCODE_MAX_MESSAGE_LENGTH, CLOUDCODE_SERVER_SETTING, CloudCodeSignInMethod, ICloudCodeAccount, ICloudCodeAgentMessage, ICloudCodeAgentResponse, ICloudCodeChatDelta, ICloudCodeDeviceSignIn, ICloudCodeMessage, ICloudCodeModel, ICloudCodeService, ICloudCodeState, ICloudCodeToolDefinition } from '../common/cloudCode.js';
+import { CLOUDCODE_DEVICE_AUTHORIZATION_PATH, CLOUDCODE_DEVICE_GRANT, CLOUDCODE_REDIRECT_URI, CloudCodeAgentEventStream, CloudCodeEventStream, CloudCodeLoopback, cloudCodeOrigin, createCloudCodeAgentPayload, createCloudCodeAuthorization, ICloudCodeAuthConfiguration, isRecord, parseCloudCodeAuthConfiguration, parseCloudCodeDeviceAuthorization } from './cloudCodeProtocol.js';
 
 interface IStoredTokens {
 	readonly accessToken: string;
 	readonly refreshToken: string;
 	readonly expiresAt: number;
 	readonly clientId: string;
+}
+
+interface ISignInAttempt {
+	readonly source: CancellationTokenSource;
+	readonly method: CloudCodeSignInMethod;
+	deviceSignIn?: ICloudCodeDeviceSignIn;
 }
 
 class CloudCodeHttpError extends Error {
@@ -88,7 +94,7 @@ export class CloudCodeService extends Disposable implements ICloudCodeService {
 	private account: ICloudCodeAccount | undefined;
 	private initialization: Promise<void> | undefined;
 	private refresh: Promise<IStoredTokens> | undefined;
-	private signingIn: CancellationTokenSource | undefined;
+	private signingIn: ISignInAttempt | undefined;
 	private signInCompletion: Promise<void> | undefined;
 	private signInCancelled = false;
 	private signingOut: Promise<void> | undefined;
@@ -134,15 +140,15 @@ export class CloudCodeService extends Disposable implements ICloudCodeService {
 		return this.state();
 	}
 
-	signIn(): Promise<void> {
+	signIn(method: CloudCodeSignInMethod = 'browser'): Promise<void> {
 		if (!this.signInCompletion) {
 			this.signInCancelled = false;
-			this.signInCompletion = this.doSignIn().finally(() => { this.signInCompletion = undefined; });
+			this.signInCompletion = this.doSignIn(method).finally(() => { this.signInCompletion = undefined; });
 		}
 		return this.signInCompletion;
 	}
 
-	private async doSignIn(): Promise<void> {
+	private async doSignIn(method: CloudCodeSignInMethod): Promise<void> {
 		if (this.isSigningOut || this.signInCancelled) {
 			throw canceled();
 		}
@@ -162,30 +168,19 @@ export class CloudCodeService extends Disposable implements ICloudCodeService {
 		}
 		const operation = new DisposableStore();
 		const source = operation.add(new CancellationTokenSource(this.lifetime.token));
-		this.signingIn = source;
+		const attempt: ISignInAttempt = this.signingIn = { source, method };
 		const generation = ++this.generation;
 		let timedOut = false;
-		const timer = setTimeout(() => { timedOut = true; source.cancel(); }, 5 * 60 * 1000);
+		const timer = setTimeout(() => { timedOut = true; source.cancel(); }, (method === 'device' ? 10 : 5) * 60 * 1000);
 		operation.add(toDisposable(() => clearTimeout(timer)));
 		this.publish();
 		const origin = this.origin!;
 		let issuedTokens: IStoredTokens | undefined;
 		try {
 			const config = parseCloudCodeAuthConfiguration(await this.json(origin, '/cloudcode/auth/config', 'GET', undefined, source.token), origin);
-			const authorization = createCloudCodeAuthorization(config);
-			const callback = operation.add(new CloudCodeLoopback(authorization.state, source.token));
-			await callback.listen();
-			const [code] = await Promise.all([
-				callback.waitForCode(),
-				this.nativeHostService.openExternal(authorization.url).then(opened => {
-					if (!opened) {
-						throw new Error(localize('cloudcode.browserFailed', "{0} could not open your browser. Please try signing in again.", CLOUDCODE_PRODUCT_NAME));
-					}
-				})
-			]);
-			const tokens = parseTokens(await this.json(origin, '/cloudcode/oauth/token', 'POST', {
-				grant_type: 'authorization_code', client_id: config.client_id, redirect_uri: CLOUDCODE_REDIRECT_URI, code, code_verifier: authorization.verifier
-			}, source.token), config.client_id);
+			const tokens = method === 'device'
+				? await this.signInWithDeviceCode(origin, config, attempt, generation)
+				: await this.signInInBrowser(origin, config, operation, source.token);
 			issuedTokens = tokens;
 			this.assertCurrent(generation, source.token);
 			// Save immediately so a temporary session-info failure can be retried without losing the refresh token.
@@ -212,7 +207,7 @@ export class CloudCodeService extends Disposable implements ICloudCodeService {
 			}
 			throw error;
 		} finally {
-			if (this.signingIn === source) {
+			if (this.signingIn === attempt) {
 				this.signingIn = undefined;
 			}
 			operation.dispose();
@@ -220,9 +215,70 @@ export class CloudCodeService extends Disposable implements ICloudCodeService {
 		}
 	}
 
+	private async signInInBrowser(origin: string, config: ICloudCodeAuthConfiguration, operation: DisposableStore, token: CancellationToken): Promise<IStoredTokens> {
+		const authorization = createCloudCodeAuthorization(config);
+		const callback = operation.add(new CloudCodeLoopback(authorization.state, token));
+		await callback.listen();
+		const [code] = await Promise.all([
+			callback.waitForCode(),
+			this.nativeHostService.openExternal(authorization.url).then(opened => {
+				if (!opened) {
+					throw new Error(localize('cloudcode.browserFailed', "{0} could not open your browser. Please try signing in again.", CLOUDCODE_PRODUCT_NAME));
+				}
+			})
+		]);
+		return parseTokens(await this.json(origin, '/cloudcode/oauth/token', 'POST', {
+			grant_type: 'authorization_code', client_id: config.client_id, redirect_uri: CLOUDCODE_REDIRECT_URI, code, code_verifier: authorization.verifier
+		}, token), config.client_id);
+	}
+
+	private async signInWithDeviceCode(origin: string, config: ICloudCodeAuthConfiguration, attempt: ISignInAttempt, generation: number): Promise<IStoredTokens> {
+		if (!config.device_authorization_endpoint) {
+			throw new Error(localize('cloudcode.deviceSignInUnavailable', "Sign-in with a code is unavailable on this server. Use browser sign-in."));
+		}
+
+		const token = attempt.source.token;
+		const device = parseCloudCodeDeviceAuthorization(await this.json(origin, CLOUDCODE_DEVICE_AUTHORIZATION_PATH, 'POST', {
+			client_id: config.client_id, scope: config.scope
+		}, token), origin);
+		this.assertCurrent(generation, token);
+		attempt.deviceSignIn = { userCode: device.userCode, verificationUri: device.verificationUri };
+		this.publish();
+
+		const deadline = Date.now() + device.expiresIn * 1000;
+		let interval = device.interval * 1000;
+		while (Date.now() < deadline) {
+			await timeout(Math.min(interval, deadline - Date.now()), token);
+			if (Date.now() >= deadline) {
+				break;
+			}
+
+			const response = await this.request(origin, '/cloudcode/oauth/token', 'POST', {
+				grant_type: CLOUDCODE_DEVICE_GRANT, client_id: config.client_id, device_code: device.deviceCode
+			}, token, undefined, true);
+			const value = await this.readJson(response, token);
+			const status = response.res.statusCode!;
+			if (status >= 200 && status < 300) {
+				return parseTokens(value, config.client_id);
+			}
+
+			const error = isRecord(value) ? value.error : undefined;
+			if (error === 'slow_down') {
+				interval += 5000;
+			} else if (error === 'expired_token') {
+				break;
+			} else if (error === 'access_denied') {
+				throw new Error(localize('cloudcode.deviceSignInDeclined', "Sign-in with a code was declined."));
+			} else if (error !== 'authorization_pending') {
+				throw new CloudCodeHttpError(status);
+			}
+		}
+		throw new Error(localize('cloudcode.deviceSignInExpired', "Your sign-in code expired. Start a new sign-in."));
+	}
+
 	async cancelSignIn(): Promise<void> {
 		this.signInCancelled = true;
-		this.signingIn?.cancel();
+		this.signingIn?.source.cancel();
 		await this.signInCompletion?.catch(() => undefined);
 	}
 
@@ -471,7 +527,7 @@ export class CloudCodeService extends Disposable implements ICloudCodeService {
 		return this.readJson(await this.request(origin, path, method, body, token, bearer), token);
 	}
 
-	private async request(origin: string, path: string, method: string, body: object | undefined, token: CancellationToken, bearer?: string): Promise<IRequestContext> {
+	private async request(origin: string, path: string, method: string, body: object | undefined, token: CancellationToken, bearer?: string, acceptOAuthError = false): Promise<IRequestContext> {
 		if (token.isCancellationRequested) {
 			throw canceled();
 		}
@@ -487,6 +543,9 @@ export class CloudCodeService extends Disposable implements ICloudCodeService {
 			return context;
 		});
 		const context = await raceCancellationError(response, token);
+		if (acceptOAuthError && (context.res.statusCode === 400 || context.res.statusCode === 401)) {
+			return context;
+		}
 		if (!context.res.statusCode || context.res.statusCode < 200 || context.res.statusCode >= 300) {
 			context.stream.destroy();
 			throw new CloudCodeHttpError(context.res.statusCode ?? 0);
@@ -546,7 +605,14 @@ export class CloudCodeService extends Disposable implements ICloudCodeService {
 	}
 
 	private state(): ICloudCodeState {
-		return { status: this.signingIn ? 'signingIn' : this.tokens ? 'signedIn' : 'signedOut', account: this.account, persisted: this.secretStorage.type === 'persisted' };
+		const attempt = this.signingIn;
+		return {
+			status: attempt ? 'signingIn' : this.tokens ? 'signedIn' : 'signedOut',
+			account: this.account,
+			persisted: this.secretStorage.type === 'persisted',
+			...(attempt && !attempt.source.token.isCancellationRequested
+				? { signInMethod: attempt.method, deviceSignIn: attempt.deviceSignIn } : {})
+		};
 	}
 
 	private publish(): void {
@@ -555,7 +621,7 @@ export class CloudCodeService extends Disposable implements ICloudCodeService {
 
 	private cancelOperations(): void {
 		this.signInCancelled = true;
-		this.signingIn?.cancel();
+		this.signingIn?.source.cancel();
 		for (const request of this.requests.values()) {
 			request.cancel();
 		}

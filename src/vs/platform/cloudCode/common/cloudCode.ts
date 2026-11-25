@@ -26,10 +26,19 @@ export interface ICloudCodeAccount {
 	readonly balance: { readonly amount_minor: number; readonly currency: string } | null;
 }
 
+export type CloudCodeSignInMethod = 'browser' | 'device';
+
+export interface ICloudCodeDeviceSignIn {
+	readonly userCode: string;
+	readonly verificationUri: string;
+}
+
 export interface ICloudCodeState {
 	readonly status: 'signedOut' | 'signingIn' | 'signedIn';
 	readonly account?: ICloudCodeAccount;
 	readonly persisted?: boolean;
+	readonly signInMethod?: CloudCodeSignInMethod;
+	readonly deviceSignIn?: ICloudCodeDeviceSignIn;
 }
 
 export interface ICloudCodeModel {
@@ -87,7 +96,7 @@ export interface ICloudCodeService {
 	readonly onDidChangeState: Event<ICloudCodeState>;
 	readonly onDidReceiveChatDelta: Event<ICloudCodeChatDelta>;
 	getState(): Promise<ICloudCodeState>;
-	signIn(): Promise<void>;
+	signIn(method?: CloudCodeSignInMethod): Promise<void>;
 	cancelSignIn(): Promise<void>;
 	signOut(): Promise<void>;
 	getModels(): Promise<readonly ICloudCodeModel[]>;

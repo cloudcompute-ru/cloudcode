@@ -17,7 +17,7 @@ import { INativeHostService } from '../../../native/common/native.js';
 import { IRequestService } from '../../../request/common/request.js';
 import { TestSecretStorageService } from '../../../secrets/test/common/testSecretStorageService.js';
 import { CLOUDCODE_SERVER_SETTING } from '../../common/cloudCode.js';
-import { CLOUDCODE_REDIRECT_URI } from '../../node/cloudCodeProtocol.js';
+import { CLOUDCODE_DEVICE_AUTHORIZATION_PATH, CLOUDCODE_DEVICE_GRANT, CLOUDCODE_REDIRECT_URI } from '../../node/cloudCodeProtocol.js';
 import { NullLogService } from '../../../log/common/log.js';
 import { IProductService } from '../../../product/common/productService.js';
 import { CloudCodeService } from '../../node/cloudCodeService.js';
@@ -32,6 +32,11 @@ suite('CloudCode service', () => {
 	const configuration = {
 		client_id: 'desktop-client', authorization_endpoint: `${origin}/oauth/authorize`, token_endpoint: `${origin}/cloudcode/oauth/token`,
 		redirect_uri: CLOUDCODE_REDIRECT_URI, scope: 'cloudcode:inference', api_base_url: `${origin}/cloudcode/api`
+	};
+	const deviceConfiguration = { ...configuration, device_authorization_endpoint: `${origin}${CLOUDCODE_DEVICE_AUTHORIZATION_PATH}` };
+	const deviceCode = {
+		device_code: 'ab'.repeat(40), user_code: 'BCDFGHJK',
+		verification_uri: `${origin}/cloudcode/device`, expires_in: 600, interval: 5
 	};
 
 	function json(value: object, statusCode = 200): IRequestContext {
@@ -271,6 +276,55 @@ suite('CloudCode service', () => {
 		const substituted = setupService(async () => json({ ...configuration, token_endpoint: 'https://another.example/token' }), undefined, async () => { browsers++; return true; });
 		await assert.rejects(substituted.service.signIn(), /not configured/);
 		assert.strictEqual(browsers, 0);
+	});
+
+	test('device sign-in displays only the user code, observes polling backoff, and saves the approved session', async () => {
+		const clock = useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+		const displayCode = new DeferredPromise<void>();
+		const polls: number[] = [];
+		const { service, secrets } = setupService(async options => {
+			switch (new URL(options.url!).pathname) {
+				case '/cloudcode/auth/config': return json(deviceConfiguration);
+				case CLOUDCODE_DEVICE_AUTHORIZATION_PATH:
+					assert.deepStrictEqual(JSON.parse(options.data!), { client_id: configuration.client_id, scope: configuration.scope });
+					return json(deviceCode);
+				case '/cloudcode/oauth/token':
+					assert.deepStrictEqual(JSON.parse(options.data!), {
+						client_id: configuration.client_id, grant_type: CLOUDCODE_DEVICE_GRANT, device_code: deviceCode.device_code
+					});
+					polls.push(Date.now());
+					return polls.length < 3 ? json({ error: polls.length === 1 ? 'authorization_pending' : 'slow_down' }, 400) : json(grant);
+				case '/cloudcode/api/session': return json(account);
+				default: return assert.fail('Unexpected request');
+			}
+		}, undefined, async () => assert.fail('Device sign-in does not open a browser automatically'));
+		store.add(service.onDidChangeState(state => { if (state.deviceSignIn) { void displayCode.complete(); } }));
+
+		const login = service.signIn('device');
+		await displayCode.p;
+		assert.deepStrictEqual((await service.getState()).deviceSignIn, { userCode: 'BCDF-GHJK', verificationUri: deviceCode.verification_uri });
+		await clock.tickAsync(20_000);
+		await login;
+		assert.deepStrictEqual({
+			polls, state: (await service.getState()).status, code: (await service.getState()).deviceSignIn,
+			accessToken: JSON.parse((await secrets.get(secretKey))!).accessToken
+		}, { polls: [5000, 10000, 20000], state: 'signedIn', code: undefined, accessToken: grant.access_token });
+	});
+
+	test('cancelling device sign-in clears the code and stops polling', async () => {
+		const clock = useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+		const displayCode = new DeferredPromise<void>();
+		const { service, requests } = setupService(async options => json(options.url?.endsWith('/auth/config') ? deviceConfiguration : deviceCode));
+		store.add(service.onDidChangeState(state => { if (state.deviceSignIn) { void displayCode.complete(); } }));
+		const login = assert.rejects(service.signIn('device'), isCancellationError);
+		await displayCode.p;
+		await service.cancelSignIn();
+		await clock.tickAsync(10_000);
+		await login;
+		assert.deepStrictEqual({
+			polls: requests.filter(request => request.url?.endsWith('/oauth/token')).length,
+			status: (await service.getState()).status, code: (await service.getState()).deviceSignIn
+		}, { polls: 0, status: 'signedOut', code: undefined });
 	});
 
 	test('an abandoned browser sign-in times out and releases its callback listener', async () => {

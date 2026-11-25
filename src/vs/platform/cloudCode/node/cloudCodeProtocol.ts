@@ -10,10 +10,12 @@ import { CancellationToken } from '../../../base/common/cancellation.js';
 import { canceled } from '../../../base/common/errors.js';
 import { Disposable, DisposableStore, toDisposable } from '../../../base/common/lifecycle.js';
 import { localize } from '../../../nls.js';
-import { CLOUDCODE_MAX_AGENT_CONTEXT_BYTES, CLOUDCODE_MAX_AGENT_MESSAGES, CLOUDCODE_MAX_MESSAGE_LENGTH, ICloudCodeAgentMessage, ICloudCodeAgentResponse, ICloudCodeToolDefinition } from '../common/cloudCode.js';
+import { CLOUDCODE_MAX_AGENT_CONTEXT_BYTES, CLOUDCODE_MAX_AGENT_MESSAGES, CLOUDCODE_MAX_MESSAGE_LENGTH, ICloudCodeAgentMessage, ICloudCodeAgentResponse, ICloudCodeDeviceSignIn, ICloudCodeToolDefinition } from '../common/cloudCode.js';
 import { ICloudCodeImage, cloudCodeImagesWithinLimit } from '../common/cloudCodeImages.js';
 
 export const CLOUDCODE_REDIRECT_URI = 'http://127.0.0.1:43827/cloudcode/callback';
+export const CLOUDCODE_DEVICE_AUTHORIZATION_PATH = '/cloudcode/oauth/device/code';
+export const CLOUDCODE_DEVICE_GRANT = 'urn:ietf:params:oauth:grant-type:device_code';
 
 export { cloudCodeOrigin } from '../common/cloudCode.js';
 
@@ -24,6 +26,7 @@ export interface ICloudCodeAuthConfiguration {
 	readonly redirect_uri: string;
 	readonly scope: string;
 	readonly api_base_url: string;
+	readonly device_authorization_endpoint?: string;
 }
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
@@ -138,7 +141,27 @@ export function parseCloudCodeAuthConfiguration(value: unknown, origin: string):
 		token_endpoint: value.token_endpoint,
 		redirect_uri: value.redirect_uri,
 		scope: value.scope,
-		api_base_url: value.api_base_url
+		api_base_url: value.api_base_url,
+		...(value.device_authorization_endpoint === `${origin}${CLOUDCODE_DEVICE_AUTHORIZATION_PATH}`
+			? { device_authorization_endpoint: value.device_authorization_endpoint } : {})
+	};
+}
+
+export function parseCloudCodeDeviceAuthorization(value: unknown, origin: string): ICloudCodeDeviceSignIn & { readonly deviceCode: string; readonly expiresIn: number; readonly interval: number } {
+	if (!isRecord(value) || typeof value.device_code !== 'string' || !/^[a-f0-9]{80}$/.test(value.device_code)
+		|| typeof value.user_code !== 'string' || !/^[BCDFGHJKLMNPQRSTVWXZ]{4}-?[BCDFGHJKLMNPQRSTVWXZ]{4}$/.test(value.user_code)
+		|| value.verification_uri !== `${origin}/cloudcode/device`
+		|| typeof value.expires_in !== 'number' || !Number.isInteger(value.expires_in) || value.expires_in <= 0 || value.expires_in > 600
+		|| typeof value.interval !== 'number' || !Number.isInteger(value.interval) || value.interval < 1 || value.interval > 60) {
+		throw new Error(localize('cloudcode.invalidDeviceAuthorization', "{0} returned an invalid sign-in code response.", CLOUDCODE_PRODUCT_NAME));
+	}
+
+	return {
+		deviceCode: value.device_code,
+		userCode: `${value.user_code.slice(0, 4)}-${value.user_code.slice(-4)}`,
+		verificationUri: value.verification_uri,
+		expiresIn: value.expires_in,
+		interval: value.interval
 	};
 }
 

@@ -21,7 +21,7 @@ import { IWorkspaceTrustManagementService } from '../../../../platform/workspace
 import { escapeGlobPattern, QueryBuilder } from '../../../services/search/common/queryBuilder.js';
 import { IFileQuery, ISearchService, resultIsMatch } from '../../../services/search/common/search.js';
 import { ITextFileService } from '../../../services/textfile/common/textfiles.js';
-import { CloudCodeAgentToolCall, ICloudCodeAgentToolResult, ICloudCodeAgentWorkspace, ICloudCodeAgentWorkspaceSession } from '../common/cloudCodeAgent.js';
+import { CloudCodeAgentToolCall, CloudCodeAgentWorkspaceError, ICloudCodeAgentToolResult, ICloudCodeAgentWorkspace, ICloudCodeAgentWorkspaceSession } from '../common/cloudCodeAgent.js';
 import { CLOUDCODE_MAX_ATTACHMENT_BYTES, ICloudCodeAttachment } from '../common/cloudCodeChatContext.js';
 
 const maxResults = 50;
@@ -32,8 +32,6 @@ const maxReadFileBytes = 16 * 1024 * 1024;
 const maxReadLines = 200;
 const excludedDirectories = ['.git', '.hg', '.svn', 'node_modules', 'vendor', 'dist', 'build', 'out', 'target', 'coverage', '.next', '.nuxt', '.cache', '.venv', 'venv', '.ssh', '.aws', '.azure', '.gnupg', '.kube', '.terraform', '.docker'];
 const excludedFiles = ['.env*', '*.pem', '*.key', '*.p12', '*.pfx', '*.crt', '*.cer', 'id_rsa*', 'id_dsa*', 'id_ecdsa*', 'id_ed25519*', 'credentials*', 'secrets*', 'service-account*.json', '.npmrc', '.netrc', '.pypirc', '*.keystore', '*.jks', '*.sqlite', '*.db', '*.tfstate*'];
-class CloudCodeAgentWorkspaceError extends Error { }
-
 const excludePatterns = [...excludedDirectories.map(name => `**/${name}/**`), ...excludedFiles.map(name => `**/${name}`)];
 
 /** Creates read-only exploration sessions anchored to the current workspace folders. */
