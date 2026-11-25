@@ -7,7 +7,7 @@ import { Event } from '../../../../base/common/event.js';
 import { ICloudCodeAttachment } from './cloudCodeChatContext.js';
 import { CloudCodeChatMode, ICloudCodeEditProposal } from './cloudCodeEdits.js';
 import { CloudCodeEditingSessionAction, ICloudCodeEditingSessionView } from './cloudCodeEditingSession.js';
-import { ICloudCodeModel, ICloudCodeState } from '../../../../platform/cloudCode/common/cloudCode.js';
+import { CloudCodeSignInMethod, ICloudCodeModel, ICloudCodeState } from '../../../../platform/cloudCode/common/cloudCode.js';
 
 export interface ICloudCodeChatMessage {
 	readonly role: 'user' | 'assistant';
@@ -42,7 +42,7 @@ export interface ICloudCodeChatView {
 	readonly onDidReviewEdit: Event<{ id: string; action: 'preview' | 'accept' | 'reject' }>;
 	readonly onDidReviewEditingSession?: Event<{ id: string; action: CloudCodeEditingSessionAction }>;
 	readonly onDidStop: Event<void>;
-	readonly onDidSignIn: Event<void>;
+	readonly onDidSignIn: Event<CloudCodeSignInMethod>;
 	readonly onDidCancelSignIn: Event<void>;
 	readonly onDidSignOut: Event<void>;
 	readonly onDidNewConversation: Event<void>;

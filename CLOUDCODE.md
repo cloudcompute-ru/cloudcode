@@ -50,6 +50,8 @@ Use a server origin without a path, query, or credentials. HTTPS is required exc
 
 Authentication uses S256 PKCE and the fixed callback `http://127.0.0.1:43827/cloudcode/callback`. CloudCode listens on that loopback port only during sign-in, so development builds work without custom-protocol registration. The browser must be on the same machine as the desktop app. If the port is occupied, close the other sign-in attempt and retry.
 
+For remote desktops and browsers that block the loopback callback, choose **Sign in with a Code** in the chat panel. Open the displayed address in a browser on any device, enter the code, and approve inference access for the team shown. CloudCode checks for approval and connects to that team. Cancel Sign-in stops the check. This option requires device sign-in to be enabled on the configured backend.
+
 Credentials remain in the native shared process and use protected secret storage. If secure persistence is unavailable, the panel explains that sign-in will be needed after restarting. **Account → Sign Out** removes the local session and attempts server revocation; if offline, CloudCode explains that server revocation was not confirmed.
 
 **Stop** immediately stops displaying the response and aborts the desktop's HTTP stream. The existing inference gateway may continue collecting the provider's final output and usage for billing; Stop does not guarantee cancellation of generation or its remaining charges. Partial responses stay visible, with an explicit note that the incomplete question/response pair is excluded from subsequent context.

@@ -18,7 +18,7 @@ import { ProgressBar } from '../../../../base/browser/ui/progressbar/progressbar
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
-import { ICloudCodeModel, ICloudCodeState } from '../../../../platform/cloudCode/common/cloudCode.js';
+import { CloudCodeSignInMethod, ICloudCodeModel, ICloudCodeState } from '../../../../platform/cloudCode/common/cloudCode.js';
 import { defaultButtonStyles, defaultProgressBarStyles } from '../../../../platform/theme/browser/defaultStyles.js';
 import { ICloudCodeAttachment } from '../common/cloudCodeChatContext.js';
 import { CloudCodeChatStatus, ICloudCodeChatMessage, ICloudCodeChatView, ICloudCodeDraftReference } from '../common/cloudCodeChat.js';
@@ -57,6 +57,10 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 	private readonly accountLabel: HTMLElement;
 	private readonly sessionHint: HTMLElement;
 	private readonly accountButton: Button;
+	private readonly deviceSignInButton: Button;
+	private readonly deviceDetails: HTMLElement;
+	private readonly deviceLink: HTMLAnchorElement;
+	private readonly userCode: HTMLElement;
 	private readonly modelPicker: HTMLElement;
 	private readonly modelButton: Button;
 	private readonly modeButton: Button;
@@ -99,7 +103,7 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 	readonly onDidSubmit = this.submitEmitter.event;
 	private readonly stopEmitter = this._register(new Emitter<void>());
 	readonly onDidStop = this.stopEmitter.event;
-	private readonly signInEmitter = this._register(new Emitter<void>());
+	private readonly signInEmitter = this._register(new Emitter<CloudCodeSignInMethod>());
 	readonly onDidSignIn = this.signInEmitter.event;
 	private readonly cancelSignInEmitter = this._register(new Emitter<void>());
 	readonly onDidCancelSignIn = this.cancelSignInEmitter.event;
@@ -117,6 +121,7 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 		private readonly pickModel: (models: readonly ICloudCodeModel[], selected: string | undefined) => Promise<string | undefined> = async () => undefined,
 		private readonly pickMode: (mode: CloudCodeChatMode) => Promise<CloudCodeChatMode | undefined> = async mode => mode === 'ask' ? 'agent' : mode === 'agent' ? 'edit' : 'ask',
 		private readonly attachmentInput?: CloudCodeAttachmentInput,
+		openVerificationPage?: (url: string) => void,
 	) {
 		super();
 
@@ -130,8 +135,22 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 		this._register(newChat.onDidClick(() => this.newConversation()));
 		const header = this.header = dom.append(this.domNode, dom.$('.cloudcode-chat-header'));
 		this.accountLabel = dom.append(header, dom.$('.cloudcode-chat-account'));
+		this.deviceDetails = dom.append(header, dom.$('.cloudcode-chat-device-sign-in', { 'aria-live': 'polite' }));
+		this.deviceDetails.hidden = true;
+		this.deviceLink = dom.append(this.deviceDetails, dom.$<HTMLAnchorElement>('a'));
+		this.userCode = dom.append(this.deviceDetails, dom.$('code'));
+		this._register(dom.addDisposableListener(this.deviceLink, dom.EventType.CLICK, event => {
+			event.preventDefault();
+			const verificationUri = this.state.deviceSignIn?.verificationUri;
+			if (verificationUri) {
+				openVerificationPage?.(verificationUri);
+			}
+		}));
 		const accountActions = dom.append(header, dom.$('.cloudcode-chat-account-actions'));
 		this.accountButton = this._register(new Button(accountActions, defaultButtonStyles));
+		this.deviceSignInButton = this._register(new Button(accountActions, { ...defaultButtonStyles, secondary: true }));
+		this.deviceSignInButton.label = localize('cloudcode.signInWithCode', "Sign in with a Code");
+		this._register(this.deviceSignInButton.onDidClick(() => this.signInEmitter.fire('device')));
 		this.sessionHint = dom.append(header, dom.$('p.cloudcode-chat-hint'));
 		this.conversation = dom.append(this.domNode, dom.$('.cloudcode-chat-conversation', {
 			role: 'region',
@@ -296,7 +315,7 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 			} else if (this.state.status === 'signingIn') {
 				this.cancelSignInEmitter.fire();
 			} else {
-				this.signInEmitter.fire();
+				this.signInEmitter.fire('browser');
 			}
 		}));
 		this._register(this.retryModelsButton.onDidClick(() => this.retryModelsEmitter.fire()));
@@ -519,6 +538,16 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 			: state.status === 'signingIn'
 				? localize('cloudcode.signingIn', "Finish signing in in your browser…")
 				: localize('cloudcode.signedOut', "Sign in with your {0} account.", CLOUDCODE_SERVICE_NAME);
+		const device = state.deviceSignIn;
+		if (state.signInMethod === 'device') {
+			this.accountLabel.textContent = device
+				? localize('cloudcode.deviceApproval', "Open this address in your browser and enter the code.")
+				: localize('cloudcode.requestingDeviceCode', "Requesting a sign-in code…");
+		}
+		this.deviceDetails.hidden = !device;
+		this.deviceLink.href = device?.verificationUri ?? '';
+		this.deviceLink.textContent = device?.verificationUri ?? '';
+		this.userCode.textContent = device?.userCode ?? '';
 		this.accountButton.label = state.status === 'signedIn'
 			? localize('cloudcode.signOut', "Sign Out")
 			: state.status === 'signingIn'
@@ -528,6 +557,7 @@ export class CloudCodeChatWidget extends Disposable implements ICloudCodeChatVie
 		this.header.hidden = state.status === 'signedIn' && state.persisted !== false;
 		this.accountLabel.hidden = state.status === 'signedIn';
 		this.accountButton.element.hidden = state.status === 'signedIn';
+		this.deviceSignInButton.element.hidden = state.status !== 'signedOut';
 		this.modelPicker.hidden = state.status !== 'signedIn';
 		this.sessionHint.hidden = state.status !== 'signedIn' || state.persisted !== false;
 		this.sessionHint.textContent = localize('cloudcode.sessionNotSaved', "This session could not be saved securely. Sign in again after restarting {0}.", CLOUDCODE_PRODUCT_NAME);

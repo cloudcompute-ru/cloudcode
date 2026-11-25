@@ -10,7 +10,7 @@ import { CancellationError } from '../../../../../base/common/errors.js';
 import { Emitter } from '../../../../../base/common/event.js';
 import { Disposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { CLOUDCODE_MAX_MESSAGE_LENGTH, ICloudCodeChatDelta, ICloudCodeMessage, ICloudCodeModel, ICloudCodeService, ICloudCodeState } from '../../../../../platform/cloudCode/common/cloudCode.js';
+import { CLOUDCODE_MAX_MESSAGE_LENGTH, CloudCodeSignInMethod, ICloudCodeChatDelta, ICloudCodeMessage, ICloudCodeModel, ICloudCodeService, ICloudCodeState } from '../../../../../platform/cloudCode/common/cloudCode.js';
 import { CloudCodeChatStatus, ICloudCodeChatMessage, ICloudCodeChatView } from '../../common/cloudCodeChat.js';
 import { CloudCodeChatController } from '../../common/cloudCodeChatController.js';
 import { formatCloudCodePrompt, ICloudCodeAttachment, ICloudCodeContextProvider } from '../../common/cloudCodeChatContext.js';
@@ -45,7 +45,7 @@ class TestView extends Disposable implements ICloudCodeChatView {
 	readonly onDidSubmit = this.submit.event;
 	readonly stop = this._register(new Emitter<void>());
 	readonly onDidStop = this.stop.event;
-	readonly signIn = this._register(new Emitter<void>());
+	readonly signIn = this._register(new Emitter<CloudCodeSignInMethod>());
 	readonly onDidSignIn = this.signIn.event;
 	readonly cancelSignIn = this._register(new Emitter<void>());
 	readonly onDidCancelSignIn = this.cancelSignIn.event;
@@ -502,7 +502,7 @@ suite('CloudCodeChatController', () => {
 
 	test('sign-out and cancelled sign-in update the view through native state events', () => {
 		view.signOut.fire();
-		view.signIn.fire();
+		view.signIn.fire('browser');
 		assert.strictEqual(view.state.status, 'signingIn');
 		view.cancelSignIn.fire();
 		assert.strictEqual(view.state.status, 'signedOut');

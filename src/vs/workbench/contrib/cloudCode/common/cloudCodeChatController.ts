@@ -12,7 +12,7 @@ import { CancellationError, isCancellationError } from '../../../../base/common/
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { localize } from '../../../../nls.js';
-import { CLOUDCODE_MAX_CONTEXT_BYTES, CLOUDCODE_MAX_MESSAGE_LENGTH, CLOUDCODE_MAX_MESSAGES, ICloudCodeMessage, ICloudCodeModel, ICloudCodeService, ICloudCodeState } from '../../../../platform/cloudCode/common/cloudCode.js';
+import { CLOUDCODE_MAX_CONTEXT_BYTES, CLOUDCODE_MAX_MESSAGE_LENGTH, CLOUDCODE_MAX_MESSAGES, CloudCodeSignInMethod, ICloudCodeMessage, ICloudCodeModel, ICloudCodeService, ICloudCodeState } from '../../../../platform/cloudCode/common/cloudCode.js';
 import { cloudCodeUserMessage, formatCloudCodePrompt, ICloudCodeAttachment, ICloudCodeContextProvider, mergeCloudCodeAttachments } from './cloudCodeChatContext.js';
 import { ICloudCodeChatMessage, ICloudCodeChatView } from './cloudCodeChat.js';
 import { CloudCodeAgentWorkspaceError, ICloudCodeAgent } from './cloudCodeAgent.js';
@@ -114,7 +114,7 @@ export class CloudCodeChatController extends Disposable {
 		this.renderEditingSessions();
 		this._register(view.onDidSubmit(prompt => void this.submit(prompt)));
 		this._register(view.onDidStop(() => this.stop()));
-		this._register(view.onDidSignIn(() => void this.signIn()));
+		this._register(view.onDidSignIn(method => void this.signIn(method)));
 		this._register(view.onDidCancelSignIn(() => void this.cancelSignIn()));
 		this._register(view.onDidSignOut(() => void this.signOut()));
 		this._register(view.onDidNewConversation(() => this.newConversation()));
@@ -185,13 +185,13 @@ export class CloudCodeChatController extends Disposable {
 		}
 	}
 
-	private async signIn(): Promise<void> {
+	private async signIn(method: CloudCodeSignInMethod): Promise<void> {
 		if (this.state.status !== 'signedOut') {
 			return;
 		}
 		this.view.setError(undefined);
 		try {
-			await this.service.signIn();
+			await this.service.signIn(method);
 		} catch (error) {
 			this.showError(error);
 		}
@@ -323,7 +323,7 @@ export class CloudCodeChatController extends Disposable {
 			throw new Error(localize('cloudcode.noModels', "No chat models are available for this account. Retry after a model becomes available."));
 		}
 		const message: ICloudCodeMessage = { role: 'user', content: prompt };
-		const request = { id: generateUuid(), message, text: '', hasAttachments: false, silent: true };
+		const request = { id: generateUuid(), message, text: '', hasAttachments: false, silent: true, stopped: false };
 		this.activeRequest = request;
 		this.updateStatus();
 		try {

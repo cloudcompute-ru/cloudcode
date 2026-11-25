@@ -53,6 +53,8 @@ export interface ICloudCodeAgentWorkspace {
 	createSession(): ICloudCodeAgentWorkspaceSession;
 }
 
+export class CloudCodeAgentWorkspaceError extends Error { }
+
 export interface ICloudCodeAgentResult {
 	readonly text: string;
 	readonly attachments: readonly ICloudCodeAttachment[];

@@ -104,7 +104,7 @@ export class CloudCodeChatViewPane extends ViewPane {
 			];
 			const picked = await this.quickInputService.pick(items, { placeHolder: localize('cloudcode.chatMode', "Choose a chat mode"), activeItem: items.find(item => item.id === mode) });
 			return picked?.id;
-		}, this.attachmentInput));
+		}, this.attachmentInput, url => { void this.openerService.open(url, { openExternal: true }); }));
 		this.controller = this._register(new CloudCodeChatController(this.widget, {
 			assertWorkspaceTrusted: () => this.context.assertWorkspaceTrusted(),
 			pickAttachments: async () => {
